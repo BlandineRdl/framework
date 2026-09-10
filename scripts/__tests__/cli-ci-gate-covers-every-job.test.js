@@ -67,7 +67,13 @@ test("only a proven next snapshot tree skips the promotion or main mutation matr
   const mutation = changes.steps.find((step) => step.id === "mutation");
 
   assert.equal(workflow.permissions.actions, "read");
-  assert.equal(workflow.permissions["pull-requests"], "read");
+  assert.equal(workflow.permissions.contents, "read");
+  assert.equal(workflow.permissions["pull-requests"], undefined);
+  assert.deepEqual(changes.permissions, {
+    actions: "read",
+    contents: "read",
+    "pull-requests": "read",
+  });
   assert.equal(changes.outputs.trusted_promotion, "${{ steps.promotion.outputs.trusted }}");
   assert.equal(promotion.name, "Check whether a promotion snapshot or main merge passed next");
   assert.match(promotion.run, /EVENT_NAME.*pull_request/);

@@ -23,11 +23,14 @@ concurrency:
 permissions:
   actions: read
   contents: read
-  pull-requests: read
 
 jobs:
   changes:
     name: cli / changes
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     outputs:
       relevant: ${{ steps.filter.outputs.relevant }}
