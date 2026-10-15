@@ -76,7 +76,7 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 | `consent-closed` | its live key names a closed interval; says "run `aidd telemetry on`", never says the clone has not opted in |
 | `unreadable-consent` | git config or `.git` unreadable, directory or git dir the file system will not let ingest look at, clone with no identity, damaged consent log |
 | `no-cwd` | no working directory |
-| `undated` | timestamp not a readable date |
+| `undated` | timestamp not a readable date, with no zone (`Z` or `±hh:mm`), or outside four-digit years |
 
 ## Report envelope
 
@@ -111,7 +111,7 @@ Directory: `AIDD_TELEMETRY_DIR`, else `AIDD_USER_CONFIG_DIR/telemetry`, else `XD
 
 | Store | Writer | Readers | Holds |
 | --- | --- | --- | --- |
-| `ledger/<YYYY-MM>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by month of `at`. Only a changed month is rewritten, whole, by rename; no new bytes, no write |
+| `ledger/<YYYY-MM-DD>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by UTC day of `at`, in time then key order, one call per line. Ingest reads its calls' days and the day on each side, and rewrites only a changed day, whole, by rename; no new bytes, no write. `report` rewrites, folded, the partitions that share a call or hold a line that is not a record. A monthly `<YYYY-MM>.jsonl` from an earlier version is still read, split into its days by the first ingest whose window touches it or by a report, then removed |
 | `ledger/offsets.json` | `ingest`, `report` | same | per transcript: bytes consumed, size, file identity. Shrunk or changed identity: read whole |
 | `ledger/roots.json` | `ingest`, `on` | `ingest`, `forget` | `{version: 2, directories}`: per directory and per clone seen alive there, `repository_id`, `root`, `clone`, `seen_at`. Other format holds nothing: a live directory is remembered again, a gone one counts `never-seen-alive`. `on` records its own root for `forget` |
 | `ledger/consents.jsonl` | `on`, `off`, `ingest`, hooks (close only) | same, plus `forget` | consent intervals, see [Consent](#consent). Outlives the clone; removed with the ledger. Hooks parse it strictly, pinned by the shared fixture |
