@@ -9,6 +9,7 @@ import { readClaudeUsageLine } from "../../../../src/contexts/telemetry/domain/f
 import type { LocatedDirectory } from "../../../../src/contexts/telemetry/domain/ports/repository-locator.js";
 import { resolutionKey } from "../../../../src/contexts/telemetry/domain/repository-resolution.js";
 import {
+  AUTUMN,
   cloneOf,
   FakeBindings,
   FakeConsents,
@@ -324,7 +325,8 @@ describe("ingesting usage into the ledger", () => {
       line("B", 20, {}, "2026-10-08T10:00:00.000Z"),
     ]);
     await s.ingest.execute();
-    expect([...(s.ledger.loadedDays ?? [])].sort()).toEqual([
+    const window = s.ledger.loadedWindow;
+    expect(window && AUTUMN.filter(window)).toEqual([
       "2026-10-06",
       "2026-10-07",
       "2026-10-08",

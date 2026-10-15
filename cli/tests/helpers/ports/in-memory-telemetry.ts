@@ -53,6 +53,11 @@ import {
 import type { TranscriptPosition } from "../../../src/contexts/telemetry/domain/transcript-position.js";
 import { foldUsage } from "../../../src/contexts/telemetry/domain/usage-fold.js";
 
+/** Every UTC day of an autumn, September to November, to read a window as the days it holds. */
+export const AUTUMN: readonly string[] = Array.from({ length: 91 }, (_, n) =>
+  new Date(Date.parse("2026-09-01T00:00:00.000Z") + n * 86_400_000).toISOString().slice(0, 10)
+);
+
 /** Transcripts held as lines; a position is the number of lines consumed. */
 export class InMemoryTranscripts implements TranscriptSource {
   readonly files = new Map<string, string[]>();
@@ -114,15 +119,15 @@ export class InMemoryLedger implements UsageLedger {
   }
 
   /** The window the last load was given; `undefined` when it read everything. */
-  loadedDays: ReadonlySet<string> | undefined;
+  loadedWindow: ((day: string) => boolean) | undefined;
 
-  async load(days?: ReadonlySet<string>): Promise<LoadedLedger> {
+  async load(holds?: (day: string) => boolean): Promise<LoadedLedger> {
     this.events.push("load");
-    this.loadedDays = days;
+    this.loadedWindow = holds;
     const read =
-      days === undefined
+      holds === undefined
         ? this.records
-        : this.records.filter((record) => days.has(dayOf(record.at) ?? ""));
+        : this.records.filter((record) => holds(dayOf(record.at) ?? ""));
     return {
       records: foldUsage(read),
       skippedLines: this.damaged.size,

@@ -13,6 +13,7 @@ import {
 } from "../../../../src/contexts/telemetry/domain/stored-usage.js";
 import { UsageLedgerAdapter } from "../../../../src/contexts/telemetry/infrastructure/usage-ledger-adapter.js";
 import { PrivateStorageAdapter } from "../../../../src/runtime/filesystem/private-storage-adapter.js";
+import { FailingStorage } from "../../../helpers/ports/failing-private-storage.js";
 
 let root: string;
 
@@ -150,5 +151,55 @@ describe("migrating a ledger kept by month", () => {
     const { dir, ledger } = await ledgerAt("damaged", damaged);
     expect((await settleLedger(ledger)).skippedLines).toBe(1);
     expect(await bytes(dir)).toEqual(Object.fromEntries([...days].sort()));
+  });
+});
+
+describe("settling only a window", () => {
+  /** Mid-September, so the window touches September and no day of October. */
+  const window = (day: string): boolean => day >= "2026-09-14" && day <= "2026-09-16";
+  const october = [...months].filter(([name]) => name.startsWith("2026-10"));
+
+  async function linesOf(dir: string): Promise<number> {
+    const files = Object.values(await bytes(dir));
+    return files.flatMap((text) => text.split("\n").slice(0, -1)).length;
+  }
+
+  it("splits a monthly file the window touches, loses and doubles no call, and leaves the rest alone", async () => {
+    const { dir, ledger } = await ledgerAt("bounded", months);
+    const held = await totals(ledger);
+    await settleLedger(ledger, window);
+    const after = await bytes(dir);
+    expect(after).toEqual({
+      ...Object.fromEntries(septemberDays),
+      ...Object.fromEntries(october),
+    });
+    expect(await linesOf(dir)).toBe(CALLS.length);
+    expect(await totals(ledger)).toEqual(held);
+  });
+
+  it("gives the same figures after a crash mid-split, once settled again", async () => {
+    const { dir, ledger } = await ledgerAt("crashed", months);
+    const held = await totals(ledger);
+    const crashing = new UsageLedgerAdapter(dir, new FailingStorage(2));
+    await expect(settleLedger(crashing, window)).rejects.toThrow("disk full");
+    expect(await totals(ledger)).toEqual(held);
+    await settleLedger(ledger, window);
+    expect(await totals(ledger)).toEqual(held);
+    expect(await linesOf(dir)).toBe(CALLS.length);
+    expect(await bytes(dir)).toEqual({
+      ...Object.fromEntries(septemberDays),
+      ...Object.fromEntries(october),
+    });
+  });
+
+  it("neither reads nor repairs a damaged day outside the window", async () => {
+    const damaged = new Map(days);
+    const torn = `${damaged.get("2026-10-20.jsonl")}{torn\n`;
+    damaged.set("2026-10-20.jsonl", torn);
+    const { dir, ledger } = await ledgerAt("damaged-outside", damaged);
+    const settled = await settleLedger(ledger, window);
+    expect(settled.skippedLines).toBe(0);
+    expect(settled.records.map((record) => record.key)).toEqual(["b"]);
+    expect((await bytes(dir))["2026-10-20.jsonl"]).toBe(torn);
   });
 });

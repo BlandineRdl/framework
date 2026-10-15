@@ -4,7 +4,12 @@ import { isErrnoException } from "../../../kernel/reading/json-file.js";
 import { readTextIfPresent } from "../../../kernel/reading/text-file.js";
 import type { PrivateStorage } from "../domain/ports/private-storage.js";
 import type { LoadedLedger, UsageLedger } from "../domain/ports/usage-ledger.js";
-import { parseStoredUsage, partitionByDay, type StoredUsage } from "../domain/stored-usage.js";
+import {
+  parseStoredUsage,
+  partitionByDay,
+  type StoredUsage,
+  shiftDay,
+} from "../domain/stored-usage.js";
 import {
   parsePositions,
   renderPositions,
@@ -32,9 +37,9 @@ function partitionOf(name: string): string {
  * reads the days around its calls, plus every day of a month it splits, and writes only what
  * changed, so its cost does not grow with the ledger. Between reports, a call whose snapshots
  * fell outside that window may sit in two days, and a crashed split leaves it in a month and a
- * day: every reader folds at read, so it is still counted once. Once a report has settled the
- * ledger, each call is on disk once and the bytes depend on what the ledger holds and not on
- * how it got there.
+ * day: every reader folds at read, so it is still counted once. Once a report with no bound
+ * has settled the ledger, each call is on disk once and the bytes depend on what the ledger
+ * holds and not on how it got there.
  *
  * `<YYYY-MM>.jsonl` is a month as an earlier version wrote it: still read, and split into its
  * days, its own file removed after them, so a crash in between leaves each call in both and
@@ -52,14 +57,14 @@ export class UsageLedgerAdapter implements UsageLedger {
     return new DirectoryLock(this.dir, LOCK_FILE, this.storage, this.lockOptions).exclusively(work);
   }
 
-  async load(days?: ReadonlySet<string>): Promise<LoadedLedger> {
+  async load(holds?: (day: string) => boolean): Promise<LoadedLedger> {
     const names = await this.partitions();
     const found: StoredUsage[] = [];
     let skippedLines = 0;
     const damaged = new Set<string>();
     const unsettled = new Set<string>();
     const heldIn = new Map<string, string>();
-    for (const name of days === undefined ? names : inWindow(names, days)) {
+    for (const name of holds === undefined ? names : inWindow(names, holds)) {
       const partition = partitionOf(name);
       if (MONTHLY.test(name)) unsettled.add(partition);
       const text = (await readTextIfPresent(join(this.dir, name))) ?? "";
@@ -125,16 +130,30 @@ export class UsageLedgerAdapter implements UsageLedger {
   }
 }
 
-/** The days asked for, and every partition of a month one of them falls in that still has its
- * monthly file: a half-finished split may hold a better snapshot in any day of that month. */
-function inWindow(names: readonly string[], days: ReadonlySet<string>): string[] {
-  const touched = new Set([...days].map((day) => day.slice(0, 7)));
-  // A day's key never equals a month's, so only a monthly file can match a touched month.
-  const splitting = new Set(names.map(partitionOf).filter((month) => touched.has(month)));
+/** Whether the test holds one of the calendar days of a `YYYY-MM` month; never, for a month
+ * no calendar has. */
+function holdsADayOf(month: string, holds: (day: string) => boolean): boolean {
+  if (Number.isNaN(Date.parse(`${month}-01T00:00:00.000Z`))) return false;
+  for (let day = `${month}-01`; day.startsWith(month); day = shiftDay(day, 1)) {
+    if (holds(day)) return true;
+  }
+  return false;
+}
+
+/** The days the test holds, and every partition of a month it holds a day of that still has
+ * its monthly file: a half-finished split may hold a better snapshot in any day of that month.
+ * Each partition on disk is tested once, and a month at most once per calendar day. */
+function inWindow(names: readonly string[], holds: (day: string) => boolean): string[] {
+  const splitting = new Set(
+    names
+      .filter((name) => MONTHLY.test(name))
+      .map(partitionOf)
+      .filter((month) => holdsADayOf(month, holds))
+  );
   return names.filter((name) => {
     const partition = partitionOf(name);
     return MONTHLY.test(name)
       ? splitting.has(partition)
-      : days.has(partition) || splitting.has(partition.slice(0, 7));
+      : splitting.has(partition.slice(0, 7)) || holds(partition);
   });
 }
