@@ -173,7 +173,7 @@ describe("printing a usage report", () => {
   it("says what an absent value is on each axis", () => {
     const labels: Record<ReportAxis, string> = {
       total: "all",
-      person: "not set",
+      person: "anonymous",
       session: "no session",
       model: "unknown model",
       agent: "no agent",
@@ -340,7 +340,7 @@ describe("printing a usage report", () => {
     ]);
     const absentOf = (absent: ReportFilters["absent"]) =>
       printed(result("total", [], one, {}, BOTH, { ...NO_FILTERS, absent }))[1];
-    expect(absentOf("person")).toBe("Selected: person = not set");
+    expect(absentOf("person")).toBe("Selected: person = anonymous");
     expect(absentOf("ticket")).toBe("Selected: ticket = no ticket");
     const unattributed = (reason: ReportFilters["unattributed"]) =>
       printed(result("total", [], one, {}, BOTH, { ...NO_FILTERS, unattributed: reason }))[1];
