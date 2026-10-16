@@ -1,10 +1,18 @@
 import { execFile } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  accessSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { copyFile, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { inject } from "vitest";
+import { afterAll, inject } from "vitest";
 import { InitUseCase } from "../../src/contexts/framework/application/init-use-case.js";
 import { CLIOutput } from "../../src/presentation/output.js";
 import { environmentWithoutGitVariables as withoutGitEnv } from "../../src/runtime/git/git-environment.js";
@@ -84,7 +92,24 @@ export async function createTestEnv(prefix: string): Promise<{
  * A sandboxed run must reach none of these: the CLI registers marketplaces through a tool's
  * own command when its binary is there, making recorded output depend on the machine.
  */
-const DRIVABLE_TOOL_BINARIES = ["claude", "codex", "copilot", "cursor-agent"];
+const DRIVABLE_TOOL_BINARIES = ["opencode", "claude", "codex", "copilot", "cursor-agent"];
+
+let isolatedNodeDir: string | undefined;
+afterAll(() => {
+  if (isolatedNodeDir) rmSync(isolatedNodeDir, { recursive: true, force: true });
+  isolatedNodeDir = undefined;
+});
+
+function sandboxNodeDir(nodeDir: string): string {
+  if (withoutDrivableToolBinary(nodeDir) && !hasExecutable(nodeDir, "aidd")) return nodeDir;
+  if (!isolatedNodeDir) {
+    isolatedNodeDir = mkdtempSync(join(tmpdir(), "aidd-e2e-node-"));
+    const target = join(isolatedNodeDir, process.platform === "win32" ? "node.exe" : "node");
+    if (process.platform === "win32") copyFileSync(process.execPath, target);
+    else symlinkSync(process.execPath, target);
+  }
+  return isolatedNodeDir;
+}
 
 /**
  * Judged by what a directory holds, never by a keep-list: `node` and `copilot` share
@@ -159,37 +184,50 @@ export function pathDirsWithoutAidd({
  * Narrow by construction, then filtered of any directory holding a drivable tool binary —
  * without the filter a tool shipped into `/usr/bin` stays reachable.
  */
-export function pathWithoutAidd(): string {
-  return pathDirsWithoutAidd({
+const REACHABLE_BINARIES = ["node", "git", "gh"] as const;
+
+const reachableBinDirs = new Map<string, string>();
+
+function reachableBinDir(dirs: readonly string[]): string | undefined {
+  if (process.platform === "win32") return undefined;
+
+  const key = dirs.join(delimiter);
+  const cached = reachableBinDirs.get(key);
+  if (cached) return cached;
+
+  const dir = mkdtempSync(join(tmpdir(), "aidd-sandbox-bin-"));
+  for (const binary of REACHABLE_BINARIES) {
+    const source =
+      binary === "node" ? process.execPath : dirs.map((d) => join(d, binary)).find(existsSync);
+    if (source) symlinkSync(source, join(dir, binary));
+  }
+
+  reachableBinDirs.set(key, dir);
+  return dir;
+}
+
+export function pathWithoutAidd(
+  overrides?: Partial<Pick<PathWithoutAiddInputs, "nodeDir" | "gitDir" | "pathDirs">>
+): string {
+  const pathDirs = overrides?.pathDirs ?? (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const nodeDir = overrides?.nodeDir ?? dirname(process.execPath);
+  const gitDir = "gitDir" in (overrides ?? {}) ? overrides?.gitDir : findGitDirWithoutAidd();
+
+  const kept = pathDirsWithoutAidd({
     platform: process.platform,
-    nodeDir: dirname(process.execPath),
-    gitDir: findGitDirWithoutAidd(),
+    nodeDir: process.platform === "win32" ? sandboxNodeDir(nodeDir) : nodeDir,
+    gitDir,
     systemRoot: process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows",
-    pathDirs: (process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    pathDirs,
     holds: hasExecutable,
-  })
-    .filter(withoutDrivableToolBinary)
-    .join(delimiter);
+  }).filter(withoutDrivableToolBinary);
+
+  const linked = reachableBinDir([nodeDir, ...(gitDir ? [gitDir] : []), ...pathDirs]);
+  return (linked ? [linked, ...kept] : kept).join(delimiter);
 }
 
 export async function copyFixtureTree(sourceDir: string, destDir: string): Promise<void> {
   await cp(sourceDir, destDir, { recursive: true });
-}
-
-// Derived here and never imported from the adapter: a test that asked the code where it
-// wrote the file could not catch it writing somewhere else.
-export function identityFileIn(fakeHome: string): string {
-  return process.platform === "win32"
-    ? join(fakeHome, "AppData", "Roaming", "aidd", "identity.json")
-    : join(fakeHome, ".config", "aidd", "identity.json");
-}
-
-/**
- * `sandboxedEnv` always sets `AIDD_USER_CONFIG_DIR`, which `TelemetrySinkAdapter` honours
- * ahead of its platform default — so the sink is under the fake home on every platform.
- */
-export function sinkDirIn(fakeHome: string): string {
-  return join(fakeHome, ".config", "aidd", "telemetry");
 }
 
 export function sandboxedEnv(
@@ -231,25 +269,12 @@ export function sandboxedEnv(
   };
 }
 
-// Under `realHome: true` neither `resolveAiddConfigDir` (identity) nor `resolveHomeDir`
-// (local cost readers) honors `AIDD_USER_CONFIG_DIR`, so `forget --yes` would delete what it
-// finds in the developer's real profile.
-function refuseRealHomeForget(args: readonly string[], options?: { realHome?: boolean }): void {
-  if (options?.realHome && args.includes("forget")) {
-    throw new Error(
-      "runCli refuses to run `forget` under realHome: true — identity resolution ignores " +
-        "AIDD_USER_CONFIG_DIR and would reach the real machine's ~/.config/aidd/identity.json."
-    );
-  }
-}
-
 export async function runCli(
   args: string[],
   cwd: string,
   fakeHome: string,
   options?: { realHome?: boolean; env?: Record<string, string> }
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  refuseRealHomeForget(args, options);
   const env = sandboxedEnv(fakeHome, options?.env, options);
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [cliPath(), ...args], {
@@ -317,4 +342,20 @@ export async function writeFakeToolBinary(
   await writeFile(join(binDir, name), `#!/bin/sh\necho "$@" >> "${logFile}"\nexit 0\n`, {
     mode: 0o755,
   });
+}
+
+/** The person opted in long ago. A child process cannot be given another clock, so after `on`
+ * every interval it opened is moved back to `since`, and transcripts dated before today fall
+ * inside it. */
+export async function backdateConsent(
+  telemetryDir: string,
+  since = "2026-09-01T00:00:00.000Z"
+): Promise<void> {
+  const file = join(telemetryDir, "ledger", "consents.jsonl");
+  const lines = (await readFile(file, "utf8")).split("\n").filter((line) => line !== "");
+  const moved = lines.map((line) => {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    return JSON.stringify("open" in event ? { ...event, open: since } : event);
+  });
+  await writeFile(file, `${moved.join("\n")}\n`);
 }

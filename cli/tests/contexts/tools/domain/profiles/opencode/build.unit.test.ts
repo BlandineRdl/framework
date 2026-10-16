@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join, posix } from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
   ArtifactContract,
@@ -10,12 +8,7 @@ import {
   transformMcpToOpencode,
 } from "../../../../../../src/contexts/tools/domain/profiles/opencode/build.js";
 import { InMemoryFileAdapter } from "../../../../../helpers/ports/in-memory-file-adapter.js";
-import { REPOSITORY_ROOT } from "../../../../../helpers/repository-root.js";
-
-const OPENCODE_PLUGIN_MODULE = readFileSync(
-  join(REPOSITORY_ROOT, "plugins/aidd-telemetry/hooks/opencode-plugin.js"),
-  "utf8"
-);
+import { StubAssetProvider } from "../../../../../helpers/ports/stub-asset-provider.js";
 
 // Built, not written literally: biome reads a string holding "${...}" as a lost template.
 const ROOT = "$" + "{CLAUDE_PLUGIN_ROOT}";
@@ -88,6 +81,31 @@ describe("transformMcpToOpencode()", () => {
 });
 
 describe("buildOpencodeFlatContract()", () => {
+  it.each(["aidd-dev.js", "aidd-dev-hooks.js"])(
+    "delivers one shared adapter outside plugin discovery when %s was built",
+    async (entry) => {
+      const adapter = "export async function setupOpencodeEvents() {}";
+      const fs = new InMemoryFileAdapter({ [`/out/.opencode/plugin/${entry}`]: "plugin" });
+      const assets = new StubAssetProvider({
+        "opencode/opencode.json": {},
+        "opencode/opencode-events.js": adapter,
+      });
+
+      const written = await buildOpencodeFlatContract().emitConfigArtifact?.(
+        ["aidd-dev"],
+        "/out",
+        "/src",
+        fs,
+        { validate: () => undefined },
+        assets
+      );
+
+      expect(written).toBe(2);
+      expect(fs.getFile("/out/.opencode/hooks/opencode-events.js")).toBe(adapter);
+      expect(fs.has("/out/.opencode/plugin/opencode-events.js")).toBe(false);
+    }
+  );
+
   it("writes no manifest and no marketplace of its own", () => {
     const contract = buildOpencodeFlatContract();
 
@@ -190,20 +208,6 @@ describe("buildOpencodeFlatContract()", () => {
       bridgePath: ".opencode/plugin/aidd-dev-hooks.js",
       skipIfSourceHas: "opencode-plugin.js",
     });
-  });
-
-  it("delivers journal.cjs where the shipped plugin module resolves it, not beside the loader", () => {
-    const hooks = supported(buildOpencodeFlatContract().artifacts.hooks);
-    const named =
-      /JOURNAL_SCRIPT = fileURLToPath\(\s*new URL\("([^"]+)", import\.meta\.url\)/u.exec(
-        OPENCODE_PLUGIN_MODULE
-      )?.[1];
-    const loaderEntry = hooks.path("aidd-telemetry", "hooks/opencode-plugin.js");
-
-    expect(named).toBeDefined();
-    expect(posix.normalize(posix.join(posix.dirname(loaderEntry), named ?? ""))).toBe(
-      hooks.path("aidd-telemetry", "hooks/journal.cjs")
-    );
   });
 
   it("generates no bridge for a plugin whose hooks name no event OpenCode delivers", () => {

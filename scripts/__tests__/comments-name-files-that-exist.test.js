@@ -18,17 +18,6 @@ const { REPO_ROOT: ROOT, repositoryPathExists } = require("../lib/repository-pat
  * as gone, or named by a test asserting it is gone. Listed one by one rather than inferred
  * from nearby words like "deleted", so adding one is a decision somebody makes on purpose. */
 const NAMED_AS_HISTORY = Object.freeze({
-  "cli/src/presentation/display/telemetry-check-display.ts": ["diagnose.cjs"],
-  "cli/src/contexts/telemetry/domain/telemetry-claim.ts": ["diagnose.cjs"],
-  "cli/src/contexts/telemetry/infrastructure/hook-trust-reader-adapter.ts": ["hook-trust.cjs"],
-  "cli/src/contexts/telemetry/infrastructure/person-identity-adapter.ts": ["identity.cjs"],
-  "cli/src/contexts/telemetry/domain/session-anchor.ts": ["session-anchor.cjs"],
-  "scripts/__tests__/aidd-telemetry-cost-skill.test.js": ["telemetry-report.cjs"],
-  "scripts/__tests__/telemetry-where-things-live.test.js": [
-    "scripts/telemetry-check.cjs",
-    "telemetry-report.cjs",
-    "telemetry-switch.cjs",
-  ],
 });
 
 /** Named inside a fixture or a runtime path a test builds, never a file of this repository. */
@@ -56,18 +45,6 @@ const NOT_A_REPOSITORY_FILE = Object.freeze({
   // The build artefact every e2e run refuses to share, named as what is avoided.
   "cli/tests/e2e/helpers.ts": ["dist/cli.js"],
   "cli/tests/e2e/global-setup.ts": ["dist/cli.js"],
-  // A sample written path fed to a payload or a fixture: illustrative, not a claim that
-  // `cli/src/index.ts` exists. Tightening the basename fallback for a rooted token (below)
-  // newly reaches these; the file the token names is out of this pass's scope, and these
-  // four never intended to name a real one in the first place.
-  "cli/tests/contexts/telemetry/infrastructure/run-journal-task-declared.integration.test.ts": [
-    "cli/src/index.ts",
-  ],
-  "cli/tests/contexts/telemetry/infrastructure/run-journal-reader-adapter.integration.test.ts": [
-    "cli/src/index.ts",
-  ],
-  "cli/tests/contexts/telemetry/domain/cost-report.unit.test.ts": ["cli/src/index.ts"],
-  "cli/tests/contexts/telemetry/domain/task-identity.unit.test.ts": ["cli/src/index.ts"],
 });
 
 const SOURCE_FILE_TOKEN = /^[\w./@-]+\.(?:ts|cjs|js|md)$/u;
@@ -81,6 +58,16 @@ const BARE_SOURCE_TOKEN = /\bcli\/(?:src|tests)\/[\w./-]+\.(?:ts|cjs|js|md)\b/gu
 
 function trackedFiles() {
   return cp.execSync("git ls-files", { cwd: ROOT, encoding: "utf8" }).trim().split("\n");
+}
+
+function repositoryBasenames(tracked) {
+  return new Set([...tracked].flatMap((file) => {
+    const basename = path.basename(file);
+    // Config assets embed executable modules as text; the delivered filename drops .txt.
+    return file.startsWith("cli/assets/configs/") && file.endsWith(".js.txt")
+      ? [basename, basename.slice(0, -4)]
+      : [basename];
+  }));
 }
 
 function findFiles(command) {
@@ -140,63 +127,6 @@ function namesSomethingReal(token, file, tracked, basenames) {
   return basenames.has(path.basename(token));
 }
 
-/** Every `.js` file the plugin's hooks actually ship. One, today: everything else there is
- * `.cjs`, because the hooks run as CommonJS while OpenCode's loader needs an ESM entry. */
-function hookJsFiles(tracked) {
-  return new Set(
-    [...tracked]
-      .filter((file) => file.startsWith("plugins/aidd-telemetry/hooks/") && file.endsWith(".js"))
-      .map((file) => path.basename(file))
-  );
-}
-
-/**
- * The same rule as below, for a mention that carries no backticks. The hooks directory is the
- * one place a narrow rule is safe: it ships exactly one `.js` file, so any other such name
- * anywhere in it, or in the tests that describe it, is a `.cjs` written wrong.
- */
-describe("a comment about the hooks names .cjs where the file is .cjs", () => {
-  it("names no <name>.js that the hooks do not actually ship", () => {
-    const tracked = new Set(trackedFiles());
-    const shipped = hookJsFiles(tracked);
-    const basenames = new Set([...tracked].map((file) => path.basename(file)));
-    const scanned = [...tracked].filter(
-      (file) =>
-        file.startsWith("plugins/aidd-telemetry/hooks/") ||
-        file.startsWith("scripts/__tests__/opencode-plugin") ||
-        file.startsWith("scripts/__tests__/aidd-telemetry-journal")
-    );
-    const wrong = [];
-
-    for (const file of scanned) {
-      const text = fs.readFileSync(path.join(ROOT, file), "utf8");
-      // `[\w.-]+`, not `[\w-]+`: a filename can carry dots of its own, and capturing only
-      // the last segment reads a dotted test filename as `test.js` and flags a real file.
-      for (const match of text.matchAll(/([\w.-]+)\.js\b/gu)) {
-        const named = `${match[1]}.js`;
-        // A path inside a fixture or an assertion about somebody else's project file is not
-        // a claim about this plugin's own layout.
-        if (named === "index.js" && text.includes("/src/index.js")) continue;
-        if (shipped.has(named)) continue;
-        if (basenames.has(named)) continue;
-        // Inside the hooks, every module is `.cjs`; `opencode-plugin.js` is the single
-        // exception, and it is in `shipped` above. So any other such name here is a
-        // `.cjs` written wrong — including a placeholder like `<host>.js`, which no lookup
-        // against a real filename could ever have caught.
-        if (file.startsWith("plugins/aidd-telemetry/hooks/")) {
-          wrong.push(`${file} names ${named}, and every module in hooks/ is .cjs`);
-          continue;
-        }
-        if (tracked.has(`plugins/aidd-telemetry/hooks/lib/${match[1]}.cjs`)) {
-          wrong.push(`${file} names ${named}, but the file it means is ${match[1]}.cjs`);
-        }
-      }
-    }
-
-    assert.deepEqual(wrong, []);
-  });
-});
-
 /** This file's own path: excluded from the scan below, because the two allowlists it defines
  * carry, as literal string values, the very tokens this rule exists to flag. A catalog entry
  * naming the path it excuses is not this file claiming the path is real. */
@@ -205,7 +135,7 @@ const SELF = "scripts/__tests__/comments-name-files-that-exist.test.js";
 describe("a comment that names a source file names one that exists", () => {
   it("names no file the repository does not hold, outside the mentions listed as history", () => {
     const tracked = new Set(trackedFiles());
-    const basenames = new Set([...tracked].map((file) => path.basename(file)));
+    const basenames = repositoryBasenames(tracked);
     const dangling = [];
 
     for (const file of scannedFiles().filter((candidate) => candidate !== SELF)) {
@@ -236,7 +166,7 @@ describe("a comment that names a source file names one that exists", () => {
 
   it("lists no allowance for a file that does exist, so the list cannot outlive its reason", () => {
     const tracked = new Set(trackedFiles());
-    const basenames = new Set([...tracked].map((file) => path.basename(file)));
+    const basenames = repositoryBasenames(tracked);
     const stale = [];
 
     for (const [file, tokens] of Object.entries(NAMED_AS_HISTORY)) {

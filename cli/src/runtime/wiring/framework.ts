@@ -39,16 +39,17 @@ import { ListInstalledRulesUseCase } from "../../contexts/framework/application/
 import { NativeHostRegistrationGate } from "../../contexts/framework/application/ownership/native-host-registration-gate.js";
 import { ProjectPluginCleanup } from "../../contexts/framework/application/ownership/project-plugin-cleanup.js";
 import { UserMarketplaceRemoveUseCase } from "../../contexts/framework/application/ownership/user-marketplace-remove-use-case.js";
-import { UserPluginDistributionLoader } from "../../contexts/framework/application/ownership/user-plugin-distribution-loader.js";
 import { UserPluginFileUpdater } from "../../contexts/framework/application/ownership/user-plugin-file-updater.js";
 import { UserPluginUpdateUseCase } from "../../contexts/framework/application/ownership/user-plugin-update-use-case.js";
 import { PluginAddUseCase } from "../../contexts/framework/application/plugin/plugin-add-use-case.js";
+import { PluginDistributionLoader } from "../../contexts/framework/application/plugin/plugin-distribution-loader.js";
 import { PluginInstallFromMarketplaceUseCase } from "../../contexts/framework/application/plugin/plugin-install-from-marketplace-use-case.js";
 import { PluginInstallUseCase } from "../../contexts/framework/application/plugin/plugin-install-use-case.js";
 import { PluginListUseCase } from "../../contexts/framework/application/plugin/plugin-list-use-case.js";
 import { PluginRemoveUseCase } from "../../contexts/framework/application/plugin/plugin-remove-use-case.js";
 import { PluginSearchUseCase } from "../../contexts/framework/application/plugin/plugin-search-use-case.js";
 import { PluginUpdateUseCase } from "../../contexts/framework/application/plugin/plugin-update-use-case.js";
+import { ValidateRecipesUseCase } from "../../contexts/framework/application/recipes/validate-recipes-use-case.js";
 import { RestoreUseCase } from "../../contexts/framework/application/restore/restore-use-case.js";
 import { ProjectContextDetectorUseCase } from "../../contexts/framework/application/setup/project-context-detector-use-case.js";
 import { SetupMachineScopeUseCase } from "../../contexts/framework/application/setup/setup-machine-scope-use-case.js";
@@ -70,6 +71,7 @@ import type { UserSourceReferences } from "../../contexts/framework/domain/ports
 import { EnvironmentAdapter } from "../../contexts/framework/infrastructure/environment-adapter.js";
 import { ManifestRepositoryAdapter } from "../../contexts/framework/infrastructure/manifest-repository-adapter.js";
 import { PluginDistributionReaderAdapter } from "../../contexts/framework/infrastructure/plugin-distribution-reader-adapter.js";
+import { RecipeFilesAdapter } from "../../contexts/framework/infrastructure/recipe-files-adapter.js";
 import { UserManifestRepositoryAdapter } from "../../contexts/framework/infrastructure/user-manifest-repository-adapter.js";
 import { UserSourceReferencesAdapter } from "../../contexts/framework/infrastructure/user-source-references-adapter.js";
 import type { FileMerger } from "../../contexts/tools/domain/ports/file-merger.js";
@@ -103,7 +105,6 @@ import type { CredentialStore } from "../auth/ports/credential-store.js";
 import { atomicWriteFile } from "../filesystem/atomic-write.js";
 import { FileAdapter } from "../filesystem/file-adapter.js";
 import { HasherAdapter } from "../filesystem/hasher-adapter.js";
-import { GitAdapter } from "../git/git-adapter.js";
 import { HttpClient } from "../http/http-client.js";
 import { PlatformAdapter } from "../platform/platform-adapter.js";
 import { InquirerPrompterAdapter, SilentPrompterAdapter } from "../prompter/prompter-adapter.js";
@@ -124,7 +125,7 @@ interface GlobalOptions {
   token?: string;
 }
 
-interface Deps extends TelemetryDeps {
+interface Deps {
   fs: FileReader & FileWriter & FileMerger;
   manifestRepo: ManifestRepository;
   /** `--scope user`'s own manifest repository: `userConfigDir()/manifest.json`, never nested
@@ -181,7 +182,9 @@ interface Deps extends TelemetryDeps {
   cleanUserScopeUseCase: CleanUserScopeUseCase;
   doctorAllUseCase: DoctorAllUseCase;
   listInstalledRulesUseCase: ListInstalledRulesUseCase;
+  validateRecipesUseCase: ValidateRecipesUseCase;
   checkUpdateUseCase: CheckUpdateUseCase;
+  telemetry: TelemetryDeps;
 }
 
 const _cache = new Map<string, Deps>();
@@ -354,19 +357,7 @@ export async function createDeps(
     userManifestRepo,
     nativeSources
   );
-  const pluginAddUseCase = new PluginAddUseCase(
-    fs,
-    manifestRepo,
-    pluginFetcher,
-    pluginDistributionReader,
-    hasher,
-    logger,
-    marketplaceRegistry,
-    ensureBuiltMarketplaceUseCase,
-    userManifestRepo
-  );
   const gitignoreUseCase = new GitignoreUseCase(fs);
-  const git = new GitAdapter(fs);
   const postInstallPipelineUseCase = new PostInstallPipelineUseCase(manifestRepo, gitignoreUseCase);
   const installRuntimeConfigUseCase = new InstallRuntimeConfigUseCase(
     fs,
@@ -374,6 +365,17 @@ export async function createDeps(
     logger,
     assetProvider,
     postInstallPipelineUseCase
+  );
+  const pluginAddUseCase = new PluginAddUseCase(
+    fs,
+    manifestRepo,
+    new PluginDistributionLoader(pluginFetcher, pluginDistributionReader),
+    hasher,
+    logger,
+    marketplaceRegistry,
+    ensureBuiltMarketplaceUseCase,
+    userManifestRepo,
+    installRuntimeConfigUseCase
   );
   const installIdeConfigUseCase = new InstallIdeConfigUseCase(
     fs,
@@ -500,16 +502,16 @@ export async function createDeps(
   const pluginUpdateUseCase = new PluginUpdateUseCase(
     fs,
     manifestRepo,
-    pluginFetcher,
-    pluginDistributionReader,
+    new PluginDistributionLoader(pluginFetcher, pluginDistributionReader),
     hasher,
-    builtMaterializationDeps
+    builtMaterializationDeps,
+    installRuntimeConfigUseCase
   );
   const userPluginUpdateUseCase = new UserPluginUpdateUseCase(
     userManifestRepo,
     new UserPluginFileUpdater(
       fs,
-      new UserPluginDistributionLoader(pluginFetcher, pluginDistributionReader),
+      new PluginDistributionLoader(pluginFetcher, pluginDistributionReader),
       hasher,
       builtMaterializationDeps
     ),
@@ -586,17 +588,8 @@ export async function createDeps(
   const doctorAllUseCase = new DoctorAllUseCase(doctorUseCase);
   const listInstalledRulesUseCase = new ListInstalledRulesUseCase(fs);
   const checkUpdateUseCase = new CheckUpdateUseCase(cliUpdater, currentVersionProvider, logger, fs);
-  const telemetry = wireTelemetry({
-    fs,
-    logger,
-    git,
-    projectRoot,
-    gitignoreUseCase,
-    currentVersionProvider,
-    manifestRepo,
-  });
   const deps: Deps = {
-    ...telemetry,
+    validateRecipesUseCase: new ValidateRecipesUseCase(new RecipeFilesAdapter()),
     fs,
     manifestRepo,
     userManifestRepo,
@@ -649,6 +642,7 @@ export async function createDeps(
     doctorAllUseCase,
     listInstalledRulesUseCase,
     checkUpdateUseCase,
+    telemetry: wireTelemetry(homedir),
   };
   _cache.set(cacheKey, deps);
   return deps;

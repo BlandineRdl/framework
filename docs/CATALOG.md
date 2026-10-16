@@ -9,7 +9,7 @@ The exhaustive list of AIDD plugins, skills, and actions. Skills are invoked thr
 - [aidd-vcs](#-aidd-vcs) - version control workflows
 - [aidd-orchestrator](#-aidd-orchestrator) - async orchestration (optional)
 - [aidd-ui](#-aidd-ui) - UI / UX (🚧 alpha, not ready)
-- [aidd-telemetry](#-aidd-telemetry) - measurement, hooks and skills (🧪 beta, off the curated path)
+- [aidd-telemetry](#-aidd-telemetry) - token measurement for Claude Code (🧪 beta, off the curated path)
 - [aidd-qa](#-aidd-qa) - acceptance QA (🆕 new, off the curated path)
 
 ---
@@ -32,7 +32,7 @@ Bootstrap, project init, context-artifact generation, diagrams, learning, and ex
 | `09-mermaid`           | Generate Mermaid diagrams via a plan-validate workflow                        | `01-mermaid`                                                                                             |
 | `10-learn`             | Capture learnings, conventions, and decisions into memory, decisions, rules   | `01-gather`, `02-assess`, `03-write`, `04-sync`                                                          |
 | `11-explore`           | Survey the project across tooling, context, and codebase, then drill into one axis | `01-survey`, `02-drill`                                                                                  |
-| `12-cook`              | Manage project and bundled recipes: list, create/update, research, or apply one | `01-list`, `02-upsert`, `03-research`, `04-apply`                                                        |
+| `12-cook`              | Manage and validate technical project or bundled recipes                       | `01-list`, `02-upsert`, `03-research`, `04-apply`, `05-validate`                                         |
 
 ## 💻 aidd-dev
 
@@ -49,7 +49,7 @@ Code transformation: plan, implement, assert, audit, review, test, refactor, deb
 | `07-refactor`   | Improve code without changing behavior across four axes                    | `01-performance`, `02-security`, `03-cleanup`, `04-architecture`                 |
 | `08-debug`      | Reproduce and fix bugs with a test-driven workflow                         | `01-reproduce`, `02-debug`, `03-reflect-issue`                                   |
 | `09-for-sure`   | Iterative loop that retries until a success condition is met               | `01-init-tracking`, `02-auto-accept`, `03-autonomous-loop`                       |
-| `10-todo`       | Split the prompt into independent todos, run one implementer agent per todo in parallel | `01-todo`                                                            |
+| `10-batch`       | Execute independent tasks in parallel and summarize each agent's status and result | `01-batch`                                                            |
 
 ## 📋 aidd-pm
 
@@ -90,6 +90,7 @@ Version-control workflows: repo init, commit, pull/merge request, release tag, i
 | `02-pull-request` | Create a draft pull or merge request                                           | `01-pull-request`                       |
 | `03-release-tag`  | Cut a semver release with annotated tag and notes                              | `01-release-tag`                        |
 | `04-issue-create` | Create an issue in the configured ticketing tool                               | `01-issue-create`                       |
+| `05-resolve-conflict` | Resolve deterministic conflicts or approved choices | `01-resolve` |
 
 ## 🎼 aidd-orchestrator
 
@@ -98,7 +99,7 @@ Runs synchronous feature delivery, optional async issue automation, and the prod
 | Skill            | Role                                                    | Protocols                   |
 | ---------------- | ------------------------------------------------------- | --------------------------- |
 | `00-async-dev`   | Single entry point for the async-dev pipeline           | `setup`, `run`, `review`    |
-| `01-sdlc`        | Autonomously drive the full development flow end to end | `frame`, `deliver`, `check` |
+| `01-sdlc`        | Drive the full development flow end to end, autonomous or supervised | `frame`, `deliver`, `check` |
 | `02-backlog`     | Route backlog intake, refinement, lifecycle, and repair | `01-inspect` to `08-verify` |
 
 ## 🎨 aidd-ui
@@ -111,16 +112,12 @@ Runs synchronous feature delivery, optional async issue automation, and the prod
 
 ## 📈 aidd-telemetry
 
-🧪 **Beta — usable, and being proven.** Measurement: bundled hooks journal every session so a unit of work can be tied to what it cost, and three skills turn that on, read it back, and check it is actually recording. Off the curated install path while it is tested in the open; every tool's coverage and every known gap is named in the plugin's own README.
+🧪 **Beta.** Measurement: counts the tokens of Claude Code sessions, per person, session, model, day, repository, task and ticket, and keeps everything on your machine.
 
-Recording needs nothing installed; turning it on and reading it back both need the `aidd`
-CLI, and each skill says so before doing anything else if it is missing.
-
-| Skill      | Role                                                          | Actions                          |
-| ---------- | -------------------------------------------------------------- | --------------------------------- |
-| `00-init`  | Turn measurement on for a project and prove it is recording    | `01-check`, `02-enable`, `03-verify` |
-| `01-cost`  | Answer what a period or one task cost, by step, model and tool | `01-locate`, `02-collect`, `03-report` |
-| `02-check` | Answer whether measurement is actually recording, line by line | `01-locate`, `02-diagnose`        |
+| Skill | Role | Actions |
+| ----- | ---- | ------- |
+| `00-init` | Opt in after consent, stop, set or remove an identity, forget | `start`, `identity`, `stop`, `forget` |
+| `01-usage` | Answer what a period, a task or a ticket consumed | `frame`, `answer` |
 
 ## 🎬 aidd-qa
 

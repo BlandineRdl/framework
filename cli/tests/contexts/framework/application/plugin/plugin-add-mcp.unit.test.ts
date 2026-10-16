@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Marketplace } from "../../../../../src/contexts/distribution/domain/marketplace.js";
 import { PluginAddUseCase } from "../../../../../src/contexts/framework/application/plugin/plugin-add-use-case.js";
+import { PluginDistributionLoader } from "../../../../../src/contexts/framework/application/plugin/plugin-distribution-loader.js";
 import type { InstalledPlugin } from "../../../../../src/contexts/framework/domain/plugins/installed-plugin.js";
 import { PluginDistributionReaderAdapter } from "../../../../../src/contexts/framework/infrastructure/plugin-distribution-reader-adapter.js";
 import {
@@ -43,8 +44,7 @@ async function buildOpencodeProject(): Promise<{
   const useCase = new PluginAddUseCase(
     deps.fs,
     deps.manifestRepo,
-    deps.pluginFetcher,
-    new PluginDistributionReaderAdapter(deps.fs),
+    new PluginDistributionLoader(deps.pluginFetcher, new PluginDistributionReaderAdapter(deps.fs)),
     deps.hasher,
     logger,
     deps.marketplaceRegistry,
@@ -204,7 +204,7 @@ describe("PluginAddUseCase and opencode MCP servers", () => {
       });
 
       expect(logger.infoMessages).toStrictEqual([
-        'Plugin "mcp-plugin" (codex): Codex will not run this plugin\'s hooks until each one is trusted — approve the prompt once in an interactive session, or pass --dangerously-bypass-hook-trust to codex exec for a headless run. Until then, a session leaves no run journal and nothing says why.',
+        'Plugin "mcp-plugin" (codex): Codex will not run this plugin\'s hooks until each one is trusted — approve the prompt once in an interactive session, or pass --dangerously-bypass-hook-trust to codex exec for a headless run. Until then, none of its hooks run and nothing says why.',
       ]);
       expect(logger.warnMessages).toStrictEqual([]);
       const installed = deps.manifestRepo

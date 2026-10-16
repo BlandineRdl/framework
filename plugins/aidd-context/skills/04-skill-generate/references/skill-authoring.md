@@ -14,7 +14,7 @@ The contract every generated skill satisfies. `skill-generate` obeys it too.
 
 - **R6.** The router holds the flow, the action table, and the transversal rules. Nothing else.
 - **R7.** The mermaid flow shows every path a run can take: the nominal chain, one entry node per case, a back-edge per loop, a terminal node per outcome. A branch stated in prose is a branch missing from the flow.
-- **R8.** The action table is `| Action | Does |`, one row per action file, in run order. `Action` is the bare slug, no backticks and no number. `Does` is a lowercase imperative half-line with no final period. Above the table, one sentence: what to read next, nothing more.
+- **R8.** The action table is `| Action | Does |`, one row per action file, in run order. `Action` is the bare slug, no backticks and no number; two actions sharing a slug keep their number (`01-plan`, `04-plan`). `Does` is a lowercase imperative half-line with no final period. Above the table, one sentence: what to read next, nothing more.
 - **R9.** `## Transversal rules` holds the rules no single action or reference owns. A rule stated there is stated nowhere else.
 - **R10.** The router is loaded on every call, an action only when its turn comes: the router carries nothing an action or a reference could carry.
 
@@ -36,5 +36,5 @@ The contract every generated skill satisfies. `skill-generate` obeys it too.
 ## Across all of them
 
 - **R17.** One fact, one home. An action acts within a router rule and cites a shared reference, never restating either.
-- **R18.** A citation is a relative markdown link, `[name](path)`, never an `@` include: nothing resolves those. It sits in the sentence that uses it, a `## Process` step to read the file, an `## Output` or `## Test` line to conform to it. Never a block or a line of its own.
+- **R18.** The first citation of a file in each authoring file is a relative Markdown link, `[name](path)`, except for sibling references under R14. Repeat mentions within the same file use only the filename in backticks when unambiguous; retain the link when ambiguous. Never an `@` include: nothing resolves those. A citation sits in the sentence that uses it, a `## Process` step to read the file, an `## Output` or `## Test` line to conform to it. Never a block or a line of its own.
 - **R19.** One file, one artifact. Split two apart only when a path needs one without the other.

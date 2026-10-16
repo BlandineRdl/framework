@@ -4,7 +4,7 @@ How this package is tested: the layers, the tools, the conventions.
 
 ## Strategy
 
-- Four vitest projects (`vitest.workspace.ts`): `unit`, `integration`, `e2e` select by extension anywhere under `tests/`; `architecture` selects `tests/architecture/**/*.arch.test.ts` only, so a stray `*.arch.test.ts` runs nowhere.
+- Four vitest projects (`vitest.config.ts` → `test.projects`): `unit`, `integration`, `e2e` select by extension anywhere under `tests/`; `architecture` selects `tests/architecture/**/*.arch.test.ts` only, so a stray `*.arch.test.ts` runs nowhere.
 - Unit: pure logic. Integration: a use case or adapter, ports substituted. E2E: the real built binary. Architecture: ratchets over source text.
 - A pyramid; read the split live.
 
@@ -12,6 +12,7 @@ How this package is tested: the layers, the tools, the conventions.
 
 - `vitest`, `fast-check` for properties, `ink-testing-library` for terminal views.
 - `stryker` for mutation, per scope, a gate in CI on the scopes a change touches.
+- Vitest 5 uses canonical `fullTestName` values for filtered runs. The pnpm patch for `@stryker-mutator/vitest-runner@10.0.0` uses that same name in runner IDs and worker coverage IDs. It is specific to Vitest 5; remove or reassess it when upgrading the runner. The canary checks nested hierarchy collisions, literal spaces and regex characters, and that each dynamic mutant runs exactly its covering test.
 - `knip`, `jscpd`, `biome`.
 
 ## Conventions
@@ -23,7 +24,7 @@ How this package is tested: the layers, the tools, the conventions.
 - A temp directory: `await mkdtemp(join(tmpdir(), "aidd-<thing>-"))`, never a fixed name (a plantable symlink). The prefix is what `scripts/sweep-stale-test-dirs.cjs` reclaims.
 - A test name is a phrase of observable behaviour; nested `describe` reads as a sentence. `E2E:` is a recurring legacy prefix, not one to copy.
 - A golden snapshot is machine-independent, never derived from an absolute path: [`golden-machine-independence.md`](../../.claude/skills/test/references/golden-machine-independence.md).
-- `describe.concurrent` appears in no unit or integration file; in e2e the golden and command-matrix suites use it, most `telemetry-*` suites do not. An observed split, not a rule.
+- `describe.concurrent` appears in no unit or integration file; in e2e the golden and command-matrix suites use it. An observed split, not a rule.
 - A bug fix's review reproduces the user's scenario against the built binary: [`bug-empirical-reproduction.md`](../../.claude/skills/test/references/bug-empirical-reproduction.md).
 - A sandboxed run reaches no tool binary and no real profile: `tests/e2e/helpers.ts` narrows `PATH`, relocates `HOME`/`XDG_CONFIG_HOME`/`USERPROFILE`/`APPDATA`; `sandbox-reaches-no-tool-binary.e2e.test.ts` holds it. `CODEX_HOME` is never overridden: a machine setting it points a real `codex` at its own profile regardless.
 - Records land under `AppData\Roaming` on Windows, `.config` elsewhere. Assert through the helper.

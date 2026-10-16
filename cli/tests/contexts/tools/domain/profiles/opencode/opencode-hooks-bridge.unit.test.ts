@@ -24,6 +24,15 @@ const THREE_EVENT_HOOKS_JSON = JSON.stringify({
 });
 
 describe("generateOpencodeHooksBridge", () => {
+  it("defines the V1 server and V2 setup entrypoints on the default plugin", () => {
+    const generated = generateOpencodeHooksBridge(THREE_EVENT_HOOKS_JSON, "aidd-sample");
+
+    expect(generated).toContain("export default {");
+    expect(generated).toContain('id: "aidd-sample-hooks"');
+    expect(generated).toContain("server: AiddSampleHooks");
+    expect(generated).toContain("setup:");
+  });
+
   it("generates a bridge module for a hooks.json naming all three mapped events", () => {
     const generated = generateOpencodeHooksBridge(THREE_EVENT_HOOKS_JSON, "aidd-sample");
 
@@ -33,11 +42,11 @@ describe("generateOpencodeHooksBridge", () => {
       // (build.ts's skipHooksJson, translated here rather than skipped) - this file is the only
       // trigger this plugin's declared hooks have on OpenCode. See opencode-hooks-bridge.ts for
       // the mapping this generator applies and the measurements behind it.
+      import { setupOpencodeEvents } from "../hooks/opencode-events.js";
       import { spawn } from "node:child_process";
       import { fileURLToPath } from "node:url";
 
-      // Never process.execPath: OpenCode ships as its own standalone binary (see
-      // plugins/aidd-telemetry/hooks/opencode-plugin.js:29-30) - that path names \`opencode\`
+      // Never process.execPath: OpenCode ships as its own standalone binary - that path names \`opencode\`
       // itself, not a Node runtime able to run this plugin's own hook scripts.
       const HOOKS_DIR = fileURLToPath(new URL("../hooks/aidd-sample/", import.meta.url));
 
@@ -45,10 +54,8 @@ describe("generateOpencodeHooksBridge", () => {
       const STOP = [{"script":"journal.cjs","args":["turn-end"]}];
       const POST_TOOL_USE = [{"script":"journal.cjs","args":["tool-used"],"matcher":"Bash"}];
 
-      // Asynchronous on purpose, unlike opencode-plugin.js's own spawnSync: that file spawns at
-      // most one script per event, this one can spawn one per matching hook across every mapped
-      // event, and blocking OpenCode's event loop once per hook multiplies the cost its own
-      // comment already accepts for a single call. A failed spawn (ENOENT, a killed timeout)
+      // Asynchronous on purpose: this can spawn one script per matching hook across every mapped
+      // event, and blocking OpenCode's event loop once per hook would multiply the cost. A failed spawn (ENOENT, a killed timeout)
       // must not throw past this function - both listeners below, plus the caller's own
       // try/catch, exist because a spawn that never launches can still throw on the stdin write.
       function runHook(script, args, payload, directory) {
@@ -64,8 +71,7 @@ describe("generateOpencodeHooksBridge", () => {
 
       /** Pure: \`session.idle\` -> every Stop hook's own {script, args, payload} - or \`[]\` for
        * any other event. Exported as a property (never a second named export - F6) so this
-       * generated module's own mapping can be asserted without spawning anything, the same seam
-       * \`AiddTelemetry.journalCallFor\` already gives opencode-plugin.js. */
+       * generated module's own mapping can be asserted without spawning anything. */
       function stopCallsFor(event, directory) {
         if (event?.type !== "session.idle") return [];
         const sessionId = event.properties?.sessionID;
@@ -101,8 +107,7 @@ describe("generateOpencodeHooksBridge", () => {
 
       export const AiddSampleHooks = async (input) => {
         // SessionStart's own approximation (module doc comment above): fired once here, never
-        // per session. Silent on purpose, the same rule journal.cjs's own main() and
-        // opencode-plugin.js's own event handler both state: a measurement or a memory refresh
+        // per session. Silent on purpose: a memory refresh
         // that breaks OpenCode's own startup is worse than one that never ran.
         try {
           for (const hook of SESSION_START) {
@@ -119,12 +124,13 @@ describe("generateOpencodeHooksBridge", () => {
         return {
           event: async ({ event }) => {
             try {
+              const directory = event?.properties?.directory ?? input.directory;
               const calls = [
-                ...stopCallsFor(event, input.directory),
-                ...postToolUseCallsFor(event, input.directory),
+                ...stopCallsFor(event, directory),
+                ...postToolUseCallsFor(event, directory),
               ];
               for (const call of calls) {
-                runHook(call.script, call.args, call.payload, input.directory);
+                runHook(call.script, call.args, call.payload, directory);
               }
             } catch {
               // Silent on purpose - see above.
@@ -135,6 +141,12 @@ describe("generateOpencodeHooksBridge", () => {
 
       AiddSampleHooks.stopCallsFor = stopCallsFor;
       AiddSampleHooks.postToolUseCallsFor = postToolUseCallsFor;
+
+      export default {
+        id: "aidd-sample-hooks",
+        server: AiddSampleHooks,
+        setup: (ctx) => setupOpencodeEvents(ctx, AiddSampleHooks),
+      };
       "
     `);
   });
