@@ -49,7 +49,7 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 **Null is not zero.**
 - Unknown is `null`, never `0`. A `null` counter is left out of its sum and counted in that counter's `unknown_records`.
 - A usage line missing a counter is still a record, that counter `null`.
-- A line that is no usage line (not JSON, no `message.usage`, no `message.id`, `sessionId` or `timestamp`) is never a record. It counts in `run.unrecognised_shapes` of the report that read it, and, when it names a clone that consents, in `coverage.left_out.unrecognised` of every report (see [Left out](#left-out)).
+- A line of a shape the reader does not recognise is never a record: one that is not JSON or not an object, or an `assistant` line whose `message.usage` is not an object or that lacks `message.id`, `sessionId` or `timestamp`. It counts in `run.unrecognised_shapes` of the report that read it, and, when it names a clone that consents, in `coverage.left_out.unrecognised` of every report (see [Left out](#left-out)). A line that is not `assistant`, has no `message.usage` or names the model `<synthetic>` is no call at all, and counts nowhere.
 - Ingest and report say: "not recognised by this read: a call missing a counter is kept with that counter unknown; a line that is no usage line is never a call." (`UNRECOGNISED_WORDS`, `presentation/display/telemetry-display.ts`). What is kept of such lines is said apart: "Kept from every read: …".
 
 **Key and fold** (`domain/formats/claude-transcript-usage.ts`).
@@ -98,33 +98,13 @@ What an ingest measured and could not store is kept in `ledger/left-out.txt`, so
 
 ## Report envelope
 
-`aidd telemetry report --json` prints one object, `version: 2`. What a figure is, what it depends on, what `run` holds, and how the envelope may change are defined once, in [the envelope reference](../../plugins/aidd-telemetry/skills/01-usage/references/envelope.md#figures-and-run). Type: `ReportEnvelope`, `cli/src/contexts/telemetry/application/report/report-envelope.ts`.
+`aidd telemetry report --json` prints one object, `version: 2`. Every field, what a figure is, what it depends on, what `run` holds, and how the envelope may change are defined once, in [the envelope reference](../../plugins/aidd-telemetry/skills/01-usage/references/envelope.md). Type: `ReportEnvelope`, `cli/src/contexts/telemetry/application/report/report-envelope.ts`. What the reference does not say:
 
-| Field | Meaning |
-| --- | --- |
-| `version` | `2` |
-| `period` | `{from, to}`, UTC days, `null` for open, as resolved: `--days` against today's UTC day. The figures depend on these days, not on the flags |
-| `axis` | `total`, `person`, `session`, `model`, `agent`, `day`, `repository`, `task`, `ticket` |
-| `filters` | `task`, `ticket`, `person`, `model`, `agent`, `session`, `repository`, `absent`, `unattributed`, in that order: `null` when not given, else as resolved (see [Filters](#filters)) |
-| `rows` | one per axis value, of the calls that match |
-| `totals` | the calls of the period that match |
-| `coverage` | `records`, `left_out`. `records` counts the calls of the period, matching or not; `left_out` (`undated`, `unrecognised`) what every ingest so far measured and could not store, see [Left out](#left-out) |
-| `run` | last: `files_read`, `unrecognised_shapes`, `not_stored`, `consent_log_damaged`, `oldest_transcript_at`, `skipped_ledger_lines`, what the read that printed the report found |
-
-Row and `totals`: `records`, `input`, `output`, `cache_read`, `cache_write` (each `{tokens, unknown_records}`), `total`. A row also has:
-
-| Field | Values |
-| --- | --- |
-| `kind` | `value`, `unattributed`, `absent` |
-| `key` | axis value for `value`, else `null` |
-| `reason` | `no-binding` or `declared-none` for `unattributed`, else `null` |
-
-- Every axis partitions the same calls: each adds up to `totals`, counter by counter.
 - Envelope version 1 put the figures and the run together. Version 2 keeps them apart and has no compatibility shape.
 - `AIDD_TELEMETRY=0`: nothing read, object is `{"version": 2, "refused": "AIDD_TELEMETRY=0"}`.
 - The text report labels an `absent` person `anonymous`; the envelope keeps `kind: absent`, `key: null`.
-- A report ingests first; what that read found is its `run`, see [the envelope reference](../../plugins/aidd-telemetry/skills/01-usage/references/envelope.md#run). `coverage.records` describes the period; `coverage.left_out` every ingest so far.
-- A report with `--days`, `--from` or `--to` reads only the days of its period and the day on each side, plus any monthly file one of them falls in, with every day of its month; with none it reads the whole ledger. The copies of a call with a `requestId` have been observed less than a day apart, and under that bound both print the same figures; a call with none is held once by the ingest that stores it, so no bound is needed. Outside these, only a report with no period folds every copy of a call: copies an older CLI stores after the migration are one such case. `run.skipped_ledger_lines` counts the lines of the partitions read.
+- A report ingests first: what that read found is its `run`.
+- A report with `--days`, `--from` or `--to` reads only the days of its period and the day on each side; with none it reads the whole ledger. The copies of a call with a `requestId` have been observed less than a day apart, and under that bound both print the same figures; a call with none is held once by the ingest that stores it, so no bound is needed. Outside these, only a report with no period folds every copy of a call: copies an older CLI stores after the migration are one such case.
 - No path, working directory or branch. `session` keys are full session ids, `repository` keys are hashes.
 
 ### Filters
@@ -161,7 +141,7 @@ Directory: `AIDD_TELEMETRY_DIR`, else `AIDD_USER_CONFIG_DIR/telemetry`, else `XD
 
 | Store | Writer | Readers | Holds |
 | --- | --- | --- | --- |
-| `ledger/<YYYY-MM-DD>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by UTC day of `at`, in time then key order, one call per line. Ingest reads its calls' days and the day on each side (every day, and so every monthly file, when one has no `requestId`), and rewrites only a changed day, whole, by rename; no new bytes, no write. `report` rewrites, folded, the partitions it read that share a call or hold a line that is not a record; a report with no period reads every partition, so after it each call is on disk once. A line that is not a record (a newer version's, a hand edit, a torn one) is never removed: a rewrite keeps it in its day, after the records, in text order and once, and counts it in `skipped_ledger_lines` on every read. A day holding only such lines stays. A monthly `<YYYY-MM>.jsonl` from an earlier version is still read, split into its days by the first ingest or report whose window touches it, or by a report with no period, then removed; its lines that are not records go to the first day of its month |
+| `ledger/<YYYY-MM-DD>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by UTC day of `at`, in time then key order, one call per line. Ingest reads its calls' days and the day on each side (every day when one has no `requestId`), and rewrites only a changed day, whole, by rename; no new bytes, no write. `report` rewrites, folded, the partitions it read that share a call or hold a line that is not a record; a report with no period reads every partition, so after it each call is on disk once. A line that is not a record (a newer version's, a hand edit, a torn one) is never removed: a rewrite keeps it in its day, after the records, in text order and once, and counts it in `skipped_ledger_lines` on every read. A day holding only such lines stays |
 | `ledger/left-out.txt` | `ingest` | `report`, `forget` | what ingests measured and could not store, by hash, see [Left out](#left-out). cli-v5.5.0 never reads it |
 | `ledger/repository-ids.json` | `ingest`, `report` | every reader of the ledger, `roots.json` and `branches.jsonl` | `{version: 1, complete, aliases, pending}`: the id an earlier version gave a repository, to its id now, both hashes or root commits. Made from each root `roots.json` names, by its `origin` now. Every read re-keys a Claude Code call stored as `message.id:sessionId:timestamp` and re-ids by this table; the first ingest or report also rewrites `roots.json` and every ledger partition so, then marks it `complete`. A run stopped part way is finished by the next with the same table. A root that could not be read, or was not there, stays in `pending`: every later ingest looks at those roots alone and, when one adds an id, rewrites the stores again. Until then its stored calls keep the earlier id while its new calls get the id of now: two ids for one repository. An earlier version reading migrated data reads it as written; what it stores afterwards is re-keyed, and re-ided when its repository is in the table, at every read. A requestless call it stores then may sit in two days: a report with a period may count that copy, until a report with no period settles the ledger. `branches.jsonl` is never rewritten, so it relies on this table for good: a damaged table is made again from the clones still there, and a snapshot of a repository none of whose clones remains keeps its earlier id, so the calls of now no longer find its declaration. An `undated` hash in `left-out.txt` keeps its earlier key |
 | `ledger/offsets.json` | `ingest`, `report` | same | per transcript: bytes consumed, size, file identity. Shrunk or changed identity: read whole |
@@ -336,6 +316,7 @@ None observable by the CLI.
 | Key changed by hand, then no hook or ingest before next `on` | interval stays open until observed; calls before observation covered, after turning off included | any session start, prompt or ingest observes it |
 | Machine clock | judged by transcript timestamp. Stamped inside an interval: covered whenever written; future-dated: covered by an open interval; outside: by stamp alone. File mtime more than a day behind its calls (set back, lagging network fs): not read. Copied transcripts: read only if written after first local `on`, stored only for a clone opted in here | - |
 | Worktree made and removed between two ingests | `never-seen-alive`, said only by the run that read it: a hook's run says nothing | for a `claude --worktree` session, the session start inside it sees it alive; none for a subagent's worktree |
+| A month file (`ledger/<YYYY-MM>.jsonl`) left by an unreleased build between #993 and #1031 | ignored: neither read nor reported | `aidd telemetry forget` removes the whole ledger |
 | No birth time | a clone reusing a deleted clone's path and inode is taken for it; of two at one directory, the later is told apart only from first seen | - |
 | Linux refuses `statx` (seccomp, kernel before 4.11) | birth = change time; identity moves on any git dir entry change, `on` included; clone stops being measured and asked | fails closed: `off` closes by key token at path |
 | Moved or renamed clone | new clone. Old interval open while path empty, closed when another directory appears; nothing stored or asked at new path until `on`. Back at same path, same identity: same clone, still measured | - |
