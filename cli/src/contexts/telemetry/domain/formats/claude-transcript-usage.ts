@@ -12,6 +12,9 @@ export interface ClaudeUsageLine {
 type Json = Record<string, unknown>;
 
 const SYNTHETIC_MODEL = "<synthetic>";
+/** What an advisor iteration adds to its message's key. Anchored for clarity only: the format
+ * writes it as a suffix alone, and message and session ids hold no `#`. */
+export const ADVISOR = /#advisor\d+$/;
 const NONE: ClaudeUsageLine = { records: [], unrecognised: [] };
 
 function counter(value: unknown): number | null {
@@ -71,6 +74,15 @@ function sum(values: readonly (number | null)[]): number {
   return values.reduce<number>((all, value) => all + (value ?? 0), 0);
 }
 
+/** Whether a call is keyed `message.id:sessionId`, having no request id. Its copies are bound
+ * in time by nothing measured: none was seen in real transcripts, whereas the copies of a call
+ * with a request id were measured under half an hour apart (see `windowOf`). */
+export function isKeyedBySession(call: Pick<UsageRecord, "tool" | "key" | "session_id">): boolean {
+  return (
+    call.tool === "claude-code" && call.key.replace(ADVISOR, "").endsWith(`:${call.session_id}`)
+  );
+}
+
 export function readClaudeUsageLine(line: string): ClaudeUsageLine {
   let parsed: unknown;
   try {
@@ -96,7 +108,7 @@ export function readClaudeUsageLine(line: string): ClaudeUsageLine {
 
   const notes: string[] = [];
   const requestId = text(root.requestId);
-  const key = requestId === null ? `${id}:${sessionId}:${at}` : `${id}:${requestId}`;
+  const key = `${id}:${requestId ?? sessionId}`;
   const iterations = messageIterations(usage, notes);
   const writes = cacheWrites(usage, iterations, notes);
   const shared = {

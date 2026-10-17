@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as fc from "fast-check";
@@ -8,15 +8,18 @@ import {
   type IngestResult,
   IngestUsageUseCase,
 } from "../../../../../src/contexts/telemetry/application/ingest-usage-use-case.js";
+import { storeCalls } from "../../../../../src/contexts/telemetry/application/ledger-upkeep.js";
 import { DeclaredBindings } from "../../../../../src/contexts/telemetry/application/report/declared-bindings.js";
 import { reportEnvelopeOf } from "../../../../../src/contexts/telemetry/application/report/report-envelope.js";
 import { ReportUsageUseCase } from "../../../../../src/contexts/telemetry/application/report/report-usage-use-case.js";
 import { SnapshotBindingsUseCase } from "../../../../../src/contexts/telemetry/application/snapshot-bindings-use-case.js";
+import { currentKeyOf } from "../../../../../src/contexts/telemetry/domain/legacy/legacy-usage-key.js";
 import type { UsageLedger } from "../../../../../src/contexts/telemetry/domain/ports/usage-ledger.js";
 import { attribute } from "../../../../../src/contexts/telemetry/domain/report/attribution.js";
 import {
   inPeriod,
   type Period,
+  windowOf,
 } from "../../../../../src/contexts/telemetry/domain/report/period.js";
 import {
   conflictsOf,
@@ -33,6 +36,7 @@ import { USAGE_AGENTS } from "../../../../../src/contexts/telemetry/domain/usage
 import { UsageLedgerAdapter } from "../../../../../src/contexts/telemetry/infrastructure/usage-ledger-adapter.js";
 import { PrivateStorageAdapter } from "../../../../../src/runtime/filesystem/private-storage-adapter.js";
 import {
+  ALREADY_MIGRATED,
   FakeBindings,
   FakeConsents,
   FakeLocator,
@@ -219,7 +223,8 @@ function ingestOf(ledger: UsageLedger): IngestUsageUseCase {
       new InMemoryBindingsLock(),
       now
     ),
-    { refusedByEnvironment: false }
+    { refusedByEnvironment: false },
+    ALREADY_MIGRATED
   );
 }
 
@@ -296,4 +301,119 @@ describe("a report on a bounded period", () => {
       { numRuns: 100 }
     );
   }, 60_000);
+});
+
+/** A call with no request id is keyed by its message and session, and nothing bounds how far
+ * apart its copies are written. A call with one keeps its copies under half a day apart, the
+ * measured bound. */
+const storedCall = fc.record({
+  anchor: fc.nat(ANCHORS.length - 1),
+  requestless: fc.boolean(),
+  copies: fc.array(
+    fc.record({
+      days: fc.integer({ min: -5, max: 5 }),
+      offset: fc.integer({ min: -HALF_DAY, max: HALF_DAY }),
+      output: fc.nat(5),
+      // Which ingest read this copy.
+      ingest: fc.nat(3),
+      // Read by an older CLI after the migration: a requestless copy then gets its own
+      // timestamped key, appended to its own day.
+      older: fc.boolean(),
+    }),
+    { minLength: 1, maxLength: 3 }
+  ),
+});
+
+describe("calls stored by ingests, a requestless call's copies days apart, some by an older CLI", () => {
+  it("leave every bounded read equal to the full ledger filtered to its period", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(storedCall, { minLength: 1, maxLength: 8 }),
+        period,
+        async (calls, asked) => {
+          const ledger = await ledgerWith(new Map());
+          const dir = join(root, `ledger-${runs}`);
+          const olderOf = (requestless: boolean, older: boolean) => requestless && older;
+          for (let ingest = 0; ingest < 4; ingest += 1) {
+            const batch = calls.flatMap(({ anchor, requestless, copies }, index) =>
+              copies
+                .filter((c) => c.ingest === ingest)
+                .map(({ days, offset, output, older }): StoredUsage => {
+                  const at = new Date(
+                    (ANCHORS[anchor] as number) + (requestless ? days * DAY_MS : 0) + offset
+                  ).toISOString();
+                  const key = requestless ? `msg_${index}:s-1` : `msg_${index}:req_${index}`;
+                  return {
+                    tool: "claude-code",
+                    tool_version: "1.0.0",
+                    key: olderOf(requestless, older) ? `${key}:${at}` : key,
+                    session_id: "s-1",
+                    agent: "main",
+                    at,
+                    model: "m-1",
+                    input: 1,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    cache_write_1h: null,
+                    reasoning: null,
+                    cwd: null,
+                    git_branch: null,
+                    repository_id: "repo-1",
+                  };
+                })
+            );
+            const older = batch.filter((record) => record.key.split(":").length > 2);
+            const now = batch.filter((record) => !older.includes(record));
+            if (now.length > 0) await storeCalls(ledger, now);
+            for (const record of older) {
+              await appendFile(
+                join(dir, `${record.at.slice(0, 10)}.jsonl`),
+                `${JSON.stringify(record)}\n`
+              );
+            }
+          }
+          const bounded = (await ledger.load(windowOf(asked))).records;
+          const full = (await ledger.load()).records;
+          // A stated limit, and the only one: a requestless call an older CLI also stored after
+          // the migration may sit in two days until a report with no period settles it, so a
+          // bounded read is exempt for that call alone. The full read is never exempt.
+          const exempt = new Set(
+            calls.flatMap(({ requestless, copies }, index) =>
+              copies.some((c) => olderOf(requestless, c.older)) ? [`msg_${index}:s-1`] : []
+            )
+          );
+          const inside = (records: readonly StoredUsage[]) =>
+            records.filter((record) => inPeriod(record.at, asked) && !exempt.has(record.key));
+          expect(inside(bounded)).toEqual(inside(full));
+          // What the limit allows for those calls, and no less: the bounded read holds such a call
+          // once when a day of its window holds a copy of it, read off the disk here, and never
+          // drops it; the full read holds it once.
+          const window = windowOf(asked) ?? (() => true);
+          const onDisk = new Set<string>();
+          for (const name of await readdir(dir)) {
+            if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name) || !window(name.slice(0, 10))) continue;
+            for (const line of (await readFile(join(dir, name), "utf8")).split("\n")) {
+              if (line !== "") onDisk.add(currentKeyOf(JSON.parse(line)));
+            }
+          }
+          for (const key of exempt) {
+            const count = (records: readonly StoredUsage[]) =>
+              records.filter((record) => record.key === key).length;
+            expect(count(bounded)).toBe(onDisk.has(key) ? 1 : 0);
+            expect(count(full)).toBe(1);
+            // Over-counting is all the limit allows: once the full read's copy is in the period,
+            // its day is in the window and the bounded read keeps that very copy.
+            const kept = full.find((record) => record.key === key);
+            if (kept !== undefined && inPeriod(kept.at, asked)) {
+              expect(bounded.find((record) => record.key === key)).toEqual(kept);
+            }
+          }
+          // One record per call, whatever its copies' spread.
+          expect(full.length).toBe(calls.filter((c) => c.copies.length > 0).length);
+        }
+      ),
+      { numRuns: 150 }
+    );
+  }, 240_000);
 });

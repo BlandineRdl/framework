@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readClaudeUsageLine } from "../../../../../src/contexts/telemetry/domain/formats/claude-transcript-usage.js";
+import {
+  isKeyedBySession,
+  readClaudeUsageLine,
+} from "../../../../../src/contexts/telemetry/domain/formats/claude-transcript-usage.js";
 
 const USAGE = {
   input_tokens: 3,
@@ -57,9 +60,20 @@ describe("one transcript line to usage records", () => {
     expect(only(line()).key).toBe("msg_A:req_A");
   });
 
-  it("keys a requestless call by message id, session id and timestamp", () => {
-    const requestless = line({ requestId: undefined });
-    expect(only(requestless).key).toBe("msg_A:s-1:2026-10-07T10:00:01.000Z");
+  it("keys a requestless call by message id and session id, so its copies are one key", () => {
+    const first = line({ requestId: undefined, timestamp: "2026-10-07T23:59:59.000Z" });
+    const copy = line({ requestId: undefined, timestamp: "2026-10-08T00:00:02.000Z" });
+    expect(only(first).key).toBe("msg_A:s-1");
+    expect(only(copy).key).toBe("msg_A:s-1");
+  });
+
+  it("keys a requestless call's advisor iterations under the same key", () => {
+    const usage = {
+      ...USAGE,
+      iterations: [{ type: "advisor_message", model: "m", input_tokens: 1, output_tokens: 2 }],
+    };
+    const { records } = readClaudeUsageLine(line({ requestId: undefined }, { usage }));
+    expect(records.map((r) => r.key)).toEqual(["msg_A:s-1", "msg_A:s-1#advisor0"]);
   });
 
   it("drops the synthetic model", () => {
@@ -261,7 +275,7 @@ describe("one transcript line to usage records", () => {
   });
 
   it("reads an empty request id as none", () => {
-    expect(only(line({ requestId: "" })).key).toBe("msg_A:s-1:2026-10-07T10:00:01.000Z");
+    expect(only(line({ requestId: "" })).key).toBe("msg_A:s-1");
   });
 
   it("leaves a model that is not text unknown", () => {
@@ -305,5 +319,21 @@ describe("one transcript line to usage records", () => {
     const outcome = readClaudeUsageLine(line({}, { usage }));
     expect(outcome.records[0]?.cache_write).toBe(9);
     expect(outcome.unrecognised).toEqual(["usage.iterations holds a non-object"]);
+  });
+});
+
+describe("a call keyed by its session, having no request id", () => {
+  it("is told by its key ending in its own session, advisor iteration or not", () => {
+    const call = (key: string, tool: "claude-code" | "codex" = "claude-code") => ({
+      tool,
+      key,
+      session_id: "s-1",
+    });
+    expect(isKeyedBySession(call("msg_A:s-1"))).toBe(true);
+    expect(isKeyedBySession(call("msg_A:s-1#advisor3"))).toBe(true);
+    expect(isKeyedBySession(call("msg_A:s-1#advisor10"))).toBe(true);
+    expect(isKeyedBySession(call("msg_A:req_A"))).toBe(false);
+    expect(isKeyedBySession(call("msg_A:xs-1"))).toBe(false);
+    expect(isKeyedBySession(call("msg_A:s-1", "codex"))).toBe(false);
   });
 });
