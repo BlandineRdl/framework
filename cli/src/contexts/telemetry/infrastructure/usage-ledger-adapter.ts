@@ -3,13 +3,14 @@ import { join } from "node:path";
 import { isErrnoException } from "../../../kernel/reading/json-file.js";
 import { readTextIfPresent } from "../../../kernel/reading/text-file.js";
 import type { PrivateStorage } from "../domain/ports/private-storage.js";
-import type { LoadedLedger, UsageLedger } from "../domain/ports/usage-ledger.js";
+import type { LeftOutStore, LoadedLedger, UsageLedger } from "../domain/ports/usage-ledger.js";
 import {
   parseStoredUsage,
   partitionByDay,
   type StoredUsage,
   shiftDay,
 } from "../domain/stored-usage.js";
+import { compareText } from "../domain/text-order.js";
 import {
   parsePositions,
   renderPositions,
@@ -17,6 +18,7 @@ import {
 } from "../domain/transcript-position.js";
 import { foldUsage } from "../domain/usage-fold.js";
 import { DirectoryLock, type LockOptions } from "./ledger-lock.js";
+import { LeftOutAdapter } from "./left-out/left-out-adapter.js";
 
 const DAILY = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const MONTHLY = /^\d{4}-\d{2}\.jsonl$/;
@@ -45,13 +47,18 @@ function partitionOf(name: string): string {
  * days, its own file removed after them, so a crash in between leaves each call in both and
  * read once.
  *
- * `offsets.json` is where each transcript was read up to; `.lock` serialises writers. */
+ * `offsets.json` is where each transcript was read up to; `left-out.txt` what ingests measured
+ * and could not store (see `LeftOutAdapter`); `.lock` serialises the writers of all of them. */
 export class UsageLedgerAdapter implements UsageLedger {
+  readonly leftOut: LeftOutStore;
+
   constructor(
     private readonly dir: string,
     private readonly storage: PrivateStorage,
     private readonly lockOptions: Partial<LockOptions> = {}
-  ) {}
+  ) {
+    this.leftOut = new LeftOutAdapter(join(dir, "left-out.txt"), dir, storage);
+  }
 
   exclusively<T>(work: () => Promise<T>): Promise<T> {
     return new DirectoryLock(this.dir, LOCK_FILE, this.storage, this.lockOptions).exclusively(work);
@@ -88,27 +95,43 @@ export class UsageLedgerAdapter implements UsageLedger {
 
   async save(records: readonly StoredUsage[], partitions?: ReadonlySet<string>): Promise<void> {
     await this.storage.ensureDirectory(this.dir);
-    const names = await this.partitions();
     const named = (day: string): boolean =>
       partitions === undefined || partitions.has(day) || partitions.has(day.slice(0, 7));
-    const days = partitionByDay(records);
-    for (const [day, inDay] of days) {
-      if (!named(day)) continue;
-      const path = join(this.dir, `${day}${EXTENSION}`);
-      const content = `${inDay.map((record) => JSON.stringify(record)).join("\n")}\n`;
-      if ((await readTextIfPresent(path)) !== content) await this.storage.replace(path, content);
-    }
-    // A record whose better snapshot moved to another day can leave its old day empty.
-    for (const name of names.filter((name) => DAILY.test(name))) {
-      const day = partitionOf(name);
-      if (named(day) && !days.has(day)) await rm(join(this.dir, name));
-    }
-    // Last: until every day of a month is written, its monthly file still holds the calls.
-    for (const name of names.filter((name) => MONTHLY.test(name))) {
-      if (partitions === undefined || partitions.has(partitionOf(name))) {
-        await rm(join(this.dir, name));
+    const held = new Map<string, string | null>();
+    const kept = new Map<string, Set<string>>();
+    const months: string[] = [];
+    for (const name of await this.partitions()) {
+      const partition = partitionOf(name);
+      const monthly = MONTHLY.test(name);
+      // A month's lines that are not records go to its first day: their content is never guessed.
+      const day = monthly ? `${partition}-01` : partition;
+      if (monthly ? partitions !== undefined && !partitions.has(partition) : !named(day)) continue;
+      const text = await readTextIfPresent(join(this.dir, name));
+      if (monthly) months.push(name);
+      else held.set(day, text);
+      for (const line of (text ?? "").split("\n")) {
+        if (line !== "" && parseStoredUsage(line) === null) {
+          kept.set(day, (kept.get(day) ?? new Set()).add(line));
+        }
       }
     }
+    const days = partitionByDay(records);
+    const emptied: string[] = [];
+    // Every write comes before any removal, so the order of the writes is free.
+    for (const day of new Set([...days.keys(), ...kept.keys(), ...held.keys()])) {
+      if (!named(day)) continue;
+      const lines = [
+        ...(days.get(day) ?? []).map((record) => JSON.stringify(record)),
+        ...[...(kept.get(day) ?? [])].sort(compareText),
+      ];
+      const path = join(this.dir, `${day}${EXTENSION}`);
+      const content = `${lines.join("\n")}\n`;
+      if (lines.length === 0) emptied.push(path);
+      else if (held.get(day) !== content) await this.storage.replace(path, content);
+    }
+    // After the writes: a record whose better snapshot moved to another day can leave its old
+    // day empty, and until every day of a month is written, its monthly file holds the calls.
+    for (const path of [...emptied, ...months.map((name) => join(this.dir, name))]) await rm(path);
   }
 
   async positions(): Promise<ReadonlyMap<string, TranscriptPosition>> {

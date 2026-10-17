@@ -1,7 +1,15 @@
+import type { LeftOutReason } from "../../domain/ports/usage-ledger.js";
 import type { UnattributedReason } from "../../domain/report/attribution.js";
 import type { Period } from "../../domain/report/period.js";
-import type { ReportFilters } from "../../domain/report/report-filter.js";
-import type { CounterSum, ReportAxis, ReportRow, Tally } from "../../domain/report/usage-report.js";
+import { filtersOf, type ReportFilters } from "../../domain/report/report-filter.js";
+import {
+  COUNTERS,
+  type Counter,
+  type CounterSum,
+  type ReportAxis,
+  type ReportRow,
+  type Tally,
+} from "../../domain/report/usage-report.js";
 import type { NotStoredReason } from "../../domain/repository-resolution.js";
 import type { ReportResult } from "./report-usage-use-case.js";
 
@@ -35,14 +43,17 @@ export interface EnvelopeRow extends EnvelopeTally {
  *
  * `rows` split the period along `axis`; the rows of every axis add up to the same `totals`,
  * counter by counter. `unknown_records` is how many calls had at least one counter unknown.
- * `coverage` says what the figures rest on: `files_read` and `unrecognised_shapes` are of
- * this run alone, `records` of the period, `not_stored` counts calls this run read and left
- * out by reason, `consent_log_damaged` is true while `ledger/consents.jsonl` cannot be trusted
- * and nothing is stored, and `oldest_transcript_at` is when the oldest transcript still on disk was
- * last written (`null` when there is none), and `skipped_ledger_lines` counts the lines that
- * were not records in the ledger partitions the report read: a bounded report reads its period
- * and the day on each side, so damage outside them is not counted. Nothing here is a path, a
- * working directory or a branch name.
+ * `coverage` says what the figures rest on: `files_read`, `unrecognised_shapes` and `not_stored`
+ * are of this run alone, `records` of the period. `left_out` is what every ingest so far,
+ * whoever ran it (the plugin's included), measured and could not store, of a clone that
+ * consents: `undated` calls and `unrecognised` lines that are no usage line, each once; none has
+ * a day, so every report counts all of them. `consent_log_damaged` is true while
+ * `ledger/consents.jsonl` cannot be trusted and nothing is stored, `oldest_transcript_at` is when
+ * the oldest transcript still on disk was last written (`null` when there is none), and
+ * `skipped_ledger_lines` counts the lines that were not records, kept as found, in the ledger
+ * partitions the report read: a bounded report reads its period and the day on each side, so
+ * damage outside them is not counted. Nothing here is a path, a working directory or a branch
+ * name.
  *
  * `filters` names what the report was narrowed to, every flag in a fixed order, `null` when it
  * was not given, else as resolved: the full id for a start or `.`, the start as typed when it
@@ -70,6 +81,7 @@ export interface ReportEnvelope {
     readonly consent_log_damaged: boolean;
     readonly oldest_transcript_at: string | null;
     readonly skipped_ledger_lines: number;
+    readonly left_out: Readonly<Record<LeftOutReason, number>>;
   };
 }
 
@@ -78,12 +90,10 @@ function counterOf(sum: CounterSum): EnvelopeCounter {
 }
 
 function tallyOf(tally: Tally): EnvelopeTally {
+  const counters = COUNTERS.map((counter) => [counter, counterOf(tally.counters[counter])]);
   return {
     records: tally.records,
-    input: counterOf(tally.counters.input),
-    output: counterOf(tally.counters.output),
-    cache_read: counterOf(tally.counters.cache_read),
-    cache_write: counterOf(tally.counters.cache_write),
+    ...(Object.fromEntries(counters) as Record<Counter, EnvelopeCounter>),
     total: counterOf(tally.total),
   };
 }
@@ -106,17 +116,7 @@ export function reportEnvelopeOf(
     version: 1,
     period,
     axis: report.axis,
-    filters: {
-      task: filters.task,
-      ticket: filters.ticket,
-      person: filters.person,
-      model: filters.model,
-      agent: filters.agent,
-      session: filters.session,
-      repository: filters.repository,
-      absent: filters.absent,
-      unattributed: filters.unattributed,
-    },
+    filters: filtersOf(filters),
     rows: report.rows.map(rowOf),
     totals: tallyOf(report.totals),
     unknown_records: report.totals.total.unknownRecords,
@@ -128,6 +128,7 @@ export function reportEnvelopeOf(
       consent_log_damaged: coverage.consentLogDamaged,
       oldest_transcript_at: coverage.oldestTranscriptAt,
       skipped_ledger_lines: coverage.skippedLedgerLines,
+      left_out: coverage.leftOut,
     },
   };
 }

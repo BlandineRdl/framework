@@ -40,6 +40,9 @@ import type {
   TranscriptSource,
 } from "../../../src/contexts/telemetry/domain/ports/transcript-source.js";
 import type {
+  LeftOutEntry,
+  LeftOutReason,
+  LeftOutStore,
   LoadedLedger,
   UsageLedger,
 } from "../../../src/contexts/telemetry/domain/ports/usage-ledger.js";
@@ -104,7 +107,10 @@ export class InMemoryLedger implements UsageLedger {
   records: StoredUsage[] = [];
   stored = new Map<string, TranscriptPosition>();
   /** Pass one array to several fakes to see the order they were used in. */
-  constructor(readonly events: string[] = []) {}
+  readonly leftOut: InMemoryLeftOut;
+  constructor(readonly events: string[] = []) {
+    this.leftOut = new InMemoryLeftOut(events);
+  }
   failSave = false;
   exclusiveRuns = 0;
 
@@ -136,7 +142,7 @@ export class InMemoryLedger implements UsageLedger {
     };
   }
 
-  /** Partitions holding a line that is not a record. Saving one repairs it. */
+  /** Partitions holding a line that is not a record. Saving one keeps it. */
   damaged = new Set<string>();
   /** Partitions not in canonical daily form. Saving one settles it. */
   unsettled = new Set<string>();
@@ -155,10 +161,7 @@ export class InMemoryLedger implements UsageLedger {
       ...this.records.filter((record) => !named(record)),
       ...records.filter(named),
     ]);
-    for (const partition of partitions ?? [...this.damaged, ...this.unsettled]) {
-      this.damaged.delete(partition);
-      this.unsettled.delete(partition);
-    }
+    for (const partition of partitions ?? [...this.unsettled]) this.unsettled.delete(partition);
   }
 
   async positions(): Promise<ReadonlyMap<string, TranscriptPosition>> {
@@ -168,6 +171,30 @@ export class InMemoryLedger implements UsageLedger {
   async savePositions(positions: ReadonlyMap<string, TranscriptPosition>): Promise<void> {
     this.events.push("positions");
     this.stored = new Map(positions);
+  }
+}
+
+/** What was measured and left out, as the text each thing is named by, unhashed. Shares its
+ * ledger's events: `left-out` when counted, `left-out-add` when added to. */
+export class InMemoryLeftOut implements LeftOutStore {
+  readonly lines = new Set<string>();
+  /** Things handed to `add`, kept or not. */
+  added = 0;
+  failSave = false;
+  constructor(readonly events: string[]) {}
+
+  async add(entries: readonly LeftOutEntry[]): Promise<void> {
+    this.events.push("left-out-add");
+    if (this.failSave) throw new Error("disk full");
+    this.added += entries.length;
+    for (const { reason, of } of entries) this.lines.add(`${reason} ${of}`);
+  }
+
+  async counts(): Promise<Readonly<Record<LeftOutReason, number>>> {
+    this.events.push("left-out");
+    const count = (reason: LeftOutReason) =>
+      [...this.lines].filter((line) => line.startsWith(`${reason} `)).length;
+    return { undated: count("undated"), unrecognised: count("unrecognised") };
   }
 }
 

@@ -47,6 +47,13 @@ export const NO_FILTERS: ReportFilters = {
 
 const FLAGS = Object.keys(NO_FILTERS) as FilterFlag[];
 
+/** Every flag, in the envelope's order, `null` unless `given` names it; nothing else. */
+export function filtersOf(given: Partial<ReportFilters>): ReportFilters {
+  const filters = { ...NO_FILTERS };
+  for (const flag of FLAGS) Object.assign(filters, { [flag]: given[flag] ?? null });
+  return filters;
+}
+
 /** What a flag asks an axis to be: a row's value, or work with no task for either reason. */
 export type Selector = AxisValue | { readonly kind: "unattributed-any" };
 

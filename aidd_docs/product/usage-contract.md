@@ -49,8 +49,8 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 **Null is not zero.**
 - Unknown is `null`, never `0`. A `null` counter is left out of its sum and counted in that counter's `unknown_records`.
 - A usage line missing a counter is still a record, that counter `null`.
-- A line that is no usage line (not JSON, no `message.usage`, no `message.id`, `sessionId` or `timestamp`) is never a record. An unrecognised shape counts in `coverage.unrecognised_shapes`.
-- The report says: "not recognised: a call missing a counter is kept with that counter unknown; a line that is no usage line is not counted".
+- A line that is no usage line (not JSON, no `message.usage`, no `message.id`, `sessionId` or `timestamp`) is never a record. It counts in the run's `coverage.unrecognised_shapes`, and, when it names a clone that consents, in `coverage.left_out.unrecognised` of every report (see [Left out](#left-out)).
+- Ingest and report say: "not recognised by this read: a call missing a counter is kept with that counter unknown; a line that is no usage line is never a call." (`UNRECOGNISED_WORDS`, `presentation/display/telemetry-display.ts`). What is kept of such lines is said apart: "Kept from every read: …".
 
 **Key and fold** (`domain/formats/claude-transcript-usage.ts`).
 
@@ -66,7 +66,7 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 
 **Repository.** The call's working directory resolved at ingest: its git root, named by the hash of the `origin` address (`host/owner/repo`), else the root commit. The address is never kept.
 
-**Not stored.** Storing follows [Consent](#consent). A call read and left out counts in `coverage.not_stored` under one reason:
+**Not stored.** Storing follows [Consent](#consent). A call read and left out counts in the run's `coverage.not_stored` under one reason, and nothing of it is kept, except an `undated` call of a clone that consents (see [Left out](#left-out)):
 
 | Reason | When |
 | --- | --- |
@@ -77,6 +77,24 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 | `unreadable-consent` | git config or `.git` unreadable, directory or git dir the file system will not let ingest look at, clone with no identity, damaged consent log |
 | `no-cwd` | no working directory |
 | `undated` | timestamp not a readable date, with no zone (`Z` or `±hh:mm`), or outside four-digit years |
+
+### Left out
+
+What an ingest measured and could not store is kept in `ledger/left-out.txt`, so every report says it, whoever ran the ingest: `aidd telemetry ingest --quiet` from the plugin's hook prints nothing and moves the offsets on.
+
+| Left out | Kept as |
+| --- | --- |
+| A call `undated`, of a clone that consents at the time of the read | `undated <hash>`, 41 bytes: a hash of its tool and key |
+| A line that is no usage line, naming the directory of a clone that consents at the line's own time or, with none, at the time of the read | `unrecognised <hash>`, 46 bytes: a hash of the line |
+
+- What consent or scope excludes is not measured: a call of a clone that never opted in, made after `off`, outside any repository, in a directory never seen alive, with no directory, or while consent cannot be read, leaves nothing here. Neither does a line that names no directory, nor one of such a clone: the run that read it still counts it in its own `unrecognised_shapes`.
+- A call whose consent cannot be read yet (`unreadable-consent`: git refused the `.git`, a config that does not parse, a git dir the file system will not show) is not a no when a clone `roots.json` remembers at that directory, seen while it could be read, consented at the call's time (or, for an undated call or a line with no time, at the read). Then ingest keeps the transcript's position from before that read, so the next ingest, a report's included, reads it again: the call is stored, or the undated call or line kept, once its consent can be read, and until then every run counts it. Otherwise (a directory no read saw readable, a repository that never opted in, a call made while its clone did not consent) the transcript moves on and only that run says it: once readable it could never be stored, so a hold would never end. A damaged consent log moves on too: it stays damaged until `forget`, which removes it, so a hold would never end. Cost: while a clone that consents stays unreadable, the part of its transcripts read since is read again by every ingest. A hold ends when the clone can be read again, when `forget --yes` removes `roots.json` and the offsets, or when the clone is removed (its directory then gone); `off` does not end it, since `off` refuses a clone whose config cannot be read. Inferred, not measured: if that re-read alone outlasts the hook's 110 s limit on `ingest`, the hook's runs are killed before they save any position, and measurement stalls for every clone until the hold ends or a report runs without that limit.
+- A call of a directory gone before any ingest saw it alive (`never-seen-alive`, a worktree made and removed between two ingests) is counted only by the run that read it, which for the hook is nobody. Its consent is unknown, so nothing of it is kept; and the directory never comes back, so reading it again would never end. This is a stated loss.
+- Resolving the directory of an undated call or of such a line remembers it in `roots.json` when it is alive, in any clone, as a dated call's always has: the directory, its clone and when it was first seen, never the call.
+- One line each, the hash of the reason and of what the thing is, sha-256 cut to 32 hex characters, in text order, each once: a re-read, a reset of offsets or a second ingest adds nothing. No key and no transcript text in clear. A line of the file this version does not know is kept and not counted. `forget` removes it with `ledger/`.
+- None of it has a day: every report counts all of it, in `coverage.left_out`, bounded or not.
+- A call missing a counter is stored with that counter `null`, counted in `unknown_records`, and kept nowhere else.
+- Limits: two lines that are no usage line with one text count once. A call is assumed to have all its copies dated or all undated: one read with a dated copy and another with an undated one would both store it and keep it. Nothing measured before this version was kept.
 
 ## Report envelope
 
@@ -91,7 +109,7 @@ The ledger stores `StoredUsage`: the record plus `repository_id`, resolved at in
 | `rows` | one per axis value, of the calls that match |
 | `totals` | the calls of the period that match |
 | `unknown_records` | calls with at least one counter unknown |
-| `coverage` | `files_read`, `records`, `unrecognised_shapes`, `not_stored`, `consent_log_damaged`, `oldest_transcript_at`, `skipped_ledger_lines`. `records` counts the calls of the period, matching or not |
+| `coverage` | `files_read`, `records`, `unrecognised_shapes`, `not_stored`, `consent_log_damaged`, `oldest_transcript_at`, `skipped_ledger_lines`, `left_out`. `records` counts the calls of the period, matching or not; `left_out` (`undated`, `unrecognised`) what every ingest so far measured and could not store, see [Left out](#left-out) |
 
 Row and `totals`: `records`, `input`, `output`, `cache_read`, `cache_write` (each `{tokens, unknown_records}`), `total`. A row also has:
 
@@ -104,7 +122,7 @@ Row and `totals`: `records`, `input`, `output`, `cache_read`, `cache_write` (eac
 - Every axis partitions the same calls: each adds up to `totals`, counter by counter.
 - `AIDD_TELEMETRY=0`: nothing read, object is `{"version": 1, "refused": "AIDD_TELEMETRY=0"}`.
 - The text report labels an `absent` person `anonymous`; the envelope keeps `kind: absent`, `key: null`.
-- A report ingests first. `files_read` and `unrecognised_shapes` describe that run; `records` the period.
+- A report ingests first. `files_read`, `unrecognised_shapes` and `not_stored` describe that run; `records` the period; `left_out` every ingest so far.
 - A report with `--days`, `--from` or `--to` reads only the days of its period and the day on each side, plus any monthly file one of them falls in, with every day of its month; with none it reads the whole ledger. The copies of one call have been observed less than a day apart, and under that bound both print the same figures. Outside it, only a report with no period folds every copy of a call. `skipped_ledger_lines` counts the lines of the partitions read.
 - No path, working directory or branch. `session` keys are full session ids, `repository` keys are hashes.
 
@@ -142,9 +160,10 @@ Directory: `AIDD_TELEMETRY_DIR`, else `AIDD_USER_CONFIG_DIR/telemetry`, else `XD
 
 | Store | Writer | Readers | Holds |
 | --- | --- | --- | --- |
-| `ledger/<YYYY-MM-DD>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by UTC day of `at`, in time then key order, one call per line. Ingest reads its calls' days and the day on each side, and rewrites only a changed day, whole, by rename; no new bytes, no write. `report` rewrites, folded, the partitions it read that share a call or hold a line that is not a record; a report with no period reads every partition, so after it each call is on disk once. A monthly `<YYYY-MM>.jsonl` from an earlier version is still read, split into its days by the first ingest or report whose window touches it, or by a report with no period, then removed |
+| `ledger/<YYYY-MM-DD>.jsonl` | `ingest`, `report` | `report`, `forget` | `StoredUsage` by UTC day of `at`, in time then key order, one call per line. Ingest reads its calls' days and the day on each side, and rewrites only a changed day, whole, by rename; no new bytes, no write. `report` rewrites, folded, the partitions it read that share a call or hold a line that is not a record; a report with no period reads every partition, so after it each call is on disk once. A line that is not a record (a newer version's, a hand edit, a torn one) is never removed: a rewrite keeps it in its day, after the records, in text order and once, and counts it in `skipped_ledger_lines` on every read. A day holding only such lines stays. A monthly `<YYYY-MM>.jsonl` from an earlier version is still read, split into its days by the first ingest or report whose window touches it, or by a report with no period, then removed; its lines that are not records go to the first day of its month |
+| `ledger/left-out.txt` | `ingest` | `report`, `forget` | what ingests measured and could not store, by hash, see [Left out](#left-out). cli-v5.5.0 never reads it |
 | `ledger/offsets.json` | `ingest`, `report` | same | per transcript: bytes consumed, size, file identity. Shrunk or changed identity: read whole |
-| `ledger/roots.json` | `ingest`, `on` | `ingest`, `forget` | `{version: 2, directories}`: per directory and per clone seen alive there, `repository_id`, `root`, `clone`, `seen_at`. Other format holds nothing: a live directory is remembered again, a gone one counts `never-seen-alive`. `on` records its own root for `forget` |
+| `ledger/roots.json` | `ingest`, `on` | `ingest`, `forget` | `{version: 2, directories}`: per directory and per clone seen alive there, `repository_id`, `root`, `clone`, `seen_at`, for every directory a read call or line named, in any clone. Other format holds nothing: a live directory is remembered again, a gone one counts `never-seen-alive`. `on` records its own root for `forget` |
 | `ledger/consents.jsonl` | `on`, `off`, `ingest`, hooks (close only) | same, plus `forget` | consent intervals, see [Consent](#consent). Outlives the clone; removed with the ledger. Hooks parse it strictly, pinned by the shared fixture |
 | `ledger/.lock` | CLI | CLI | `{pid, created_at}`; dead process or older than ten minutes: cleared |
 | `bindings/.lock` | CLI | CLI | same format. Declarations and snapshots run under it; `task` never takes the ledger lock, which an ingest holds while reading transcripts |
@@ -156,7 +175,7 @@ Directory: `AIDD_TELEMETRY_DIR`, else `AIDD_USER_CONFIG_DIR/telemetry`, else `XD
 | git config `--local` `branch.<name>.aiddTask`, `aiddTicket`, `aiddDeclaredFor`, `aiddDeclaredAt` | `task` | hooks, `task`, `report` via snapshots | branch declaration, `aiddDeclaredAt` written last, `aiddDeclaredFor` = `<name>`; see [Branch declaration](#branch-declaration) |
 | git config `--local` `aidd.telemetry` | `on`, `off`, `forget` | hooks, CLI | `2:<token>` or `off`. Half of consent: alone it grants nothing |
 
-- A line not exactly its store's format is skipped, never guessed. Every JSON Lines store is append-only except the ledger.
+- A line not exactly its store's format is skipped, never guessed. Every JSON Lines store is append-only except the ledger, which keeps such a line through every rewrite.
 - `forget` removes `ledger/`, `bindings/`, `identity.json`, declaration keys and consent key in each recorded clone, and leftovers of an earlier measurement. Never the directory itself.
 
 ## Attribution
@@ -248,7 +267,7 @@ sequenceDiagram
 > 2. X had an open consent interval at the call's time;
 > 3. `AIDD_TELEMETRY=0` is not set.
 
-Nothing else: no backfill, no first-`on` special case, no interval before its `on`, no consent flag elsewhere, no live-key condition on a live clone. **Measurement starts at `on`**; `on` reads nothing back. A transcript last written more than a day before the first interval opened is not read nor counted (the day absorbs a lagging file clock). Every clause is decided from observed facts, never from a path or a remote's look.
+Nothing else: no backfill, no first-`on` special case, no interval before its `on`, no consent flag elsewhere, no live-key condition on a live clone. **Measurement starts at `on`**; `on` reads nothing back. One exception, with no time to be judged by: an undated call, or a line that is no usage line and has no time, is judged by its clone's consent at the read, and kept as a hash only if the clone consents then (see [Left out](#left-out)). A transcript last written more than a day before the first interval opened is not read nor counted (the day absorbs a lagging file clock). Every clause is decided from observed facts, never from a path or a remote's look.
 
 ```mermaid
 stateDiagram-v2
@@ -294,7 +313,7 @@ stateDiagram-v2
 - `--local` writes the common config: shared by linked worktrees, never committed. A teammate who pulls is not measured, asked or blocked until their own `on`.
 - `.aidd/config.json` is never consent: not `telemetry: {enabled: true, version: 2}`, not the old bare `enabled: true`. Not read for consent.
 - Unreadable git config: `unreadable`, grants nothing, never rewritten.
-- A clone that never opted in: nothing stored, asked or blocked.
+- A clone that never opted in: nothing stored, asked or blocked. Nothing is kept of its calls in `left-out.txt` either; `roots.json` may name its directory, as for any directory read.
 - Key `off`, from `off` or by hand: `status` and `task` say measurement was turned off in this clone and that `aidd telemetry on` measures it again; a damaged log or an unidentified clone reads unreadable instead, since `on` would refuse. Any other key that grants nothing reads as never opted in. Ingest still counts its calls under `no-consent`.
 
 **`on` also:** removes the old `telemetry` block from `.aidd/config.json` byte-for-byte otherwise, deleting the file only if that block was all (says the change may need committing); removes an earlier measurement's leftovers in the repository; records its clone for `forget`; warns when Claude Code's transcript retention is short; ends with the next step, declaring a task, which the hooks ask for in Claude Code. Does not reset offsets.
@@ -314,12 +333,12 @@ None observable by the CLI.
 | --- | --- | --- |
 | Key changed by hand, then no hook or ingest before next `on` | interval stays open until observed; calls before observation covered, after turning off included | any session start, prompt or ingest observes it |
 | Machine clock | judged by transcript timestamp. Stamped inside an interval: covered whenever written; future-dated: covered by an open interval; outside: by stamp alone. File mtime more than a day behind its calls (set back, lagging network fs): not read. Copied transcripts: read only if written after first local `on`, stored only for a clone opted in here | - |
-| Worktree made and removed between two ingests | `never-seen-alive` | the session start inside it sees it alive |
+| Worktree made and removed between two ingests | `never-seen-alive`, said only by the run that read it: a hook's run says nothing | for a `claude --worktree` session, the session start inside it sees it alive; none for a subagent's worktree |
 | No birth time | a clone reusing a deleted clone's path and inode is taken for it; of two at one directory, the later is told apart only from first seen | - |
 | Linux refuses `statx` (seccomp, kernel before 4.11) | birth = change time; identity moves on any git dir entry change, `on` included; clone stops being measured and asked | fails closed: `off` closes by key token at path |
 | Moved or renamed clone | new clone. Old interval open while path empty, closed when another directory appears; nothing stored or asked at new path until `on`. Back at same path, same identity: same clone, still measured | - |
 | Consent log edited by hand | outside the contract; can reopen a window `off` closed | tool says `forget --yes` |
-| Call read while git config, `.git` or git dir unreadable | `unreadable-consent`, offsets move on: not recovered on repair | - |
+| Call read while git config, `.git` or git dir unreadable | `unreadable-consent`. A clone remembered there that consented at the time: the transcript read again by every ingest until its consent can be read, then stored. Otherwise: said only by that run | repair the clone, or `forget --yes`, or remove the clone; not `off` |
 | pid reused within one boot by a Claude process whose `startup` was never recorded (e.g. started before `on`) | can take the dead process's last session as predecessor, so `/clear` carries its task | announced, replaced by first declaration |
 | `AIDD_TELEMETRY=0` | stops hooks too; a key turned off meanwhile is observed at the next run without it | - |
 | Declaration keys edited by hand: every key including the stamp, `aiddTask` and `aiddDeclaredAt` alone (read as unstamped), or a stamp removed or emptied | the branch reads as declared: no reader can tell who wrote a git config key | - |

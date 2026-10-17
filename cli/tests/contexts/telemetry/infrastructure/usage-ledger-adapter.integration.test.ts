@@ -219,26 +219,60 @@ describe("the ledger on disk", () => {
     );
   });
 
-  it("counts a line that is not a record and drops it at the next save", async () => {
+  it("counts a line that is not a record, and keeps it at every save, after the records", async () => {
     await ledger.save([stored()]);
     const path = join(dir, "2026-10-07.jsonl");
-    await writeFile(path, `${await readFile(path, "utf8")}{torn\n\n`);
+    await writeFile(path, `{torn\n${await readFile(path, "utf8")}\n`);
     const loaded = await ledger.load();
     expect(loaded.skippedLines).toBe(1);
     expect([...loaded.damaged]).toEqual(["2026-10-07"]);
     expect(loaded.records).toHaveLength(1);
     await ledger.save([...loaded.records, stored({ key: "b" })]);
-    expect(await readFile(path, "utf8")).not.toContain("torn");
+    expect(await readFile(path, "utf8")).toBe(`${lines([stored({ key: "b" }), stored()])}{torn\n`);
+    expect((await ledger.load()).skippedLines).toBe(1);
   });
 
-  it("names only the partitions that hold a line that is not a record", async () => {
+  it("names only the partitions that hold a line that is not a record, and still does once saved", async () => {
     await ledger.save([stored(), stored({ key: "n", at: "2026-11-02T00:00:00Z" })]);
     await writeFile(join(dir, "2026-10-07.jsonl"), "{torn\n");
     const loaded = await ledger.load();
     expect([...loaded.damaged]).toEqual(["2026-10-07"]);
     expect(loaded.unsettled.size).toBe(0);
     await ledger.save(loaded.records, loaded.damaged);
-    expect((await ledger.load()).skippedLines).toBe(0);
+    const again = await ledger.load();
+    expect([again.skippedLines, [...again.damaged]]).toEqual([1, ["2026-10-07"]]);
+  });
+
+  it("keeps a newer version's record it cannot read, byte for byte, through every rewrite", async () => {
+    const newer = JSON.stringify({ ...stored({ key: "r" }), agent: "reviewer", effort: "high" });
+    await writePartition("2026-10-07.jsonl", `${newer}\n${lines([stored()])}`);
+    await ledger.save([stored({ output: 99 }), stored({ key: "b" })]);
+    await ledger.save([stored({ output: 99 })], new Set(["2026-10-07"]));
+    expect(await readFile(join(dir, "2026-10-07.jsonl"), "utf8")).toBe(
+      `${lines([stored({ output: 99 })])}${newer}\n`
+    );
+  });
+
+  it("keeps a day that holds only lines that are not records, when its calls move away", async () => {
+    await writePartition(
+      "2026-08-02.jsonl",
+      `${lines([stored({ key: "a", at: "2026-08-02T00:00:00Z" })])}{torn\n`
+    );
+    await ledger.save(
+      [stored({ key: "a", at: "2026-08-03T00:00:00Z", output: 2 })],
+      new Set(["2026-08-02", "2026-08-03"])
+    );
+    expect(await readFile(join(dir, "2026-08-02.jsonl"), "utf8")).toBe("{torn\n");
+    await ledger.save([]);
+    expect(await partitions()).toEqual(["2026-08-02.jsonl"]);
+  });
+
+  it("writes the lines it keeps in text order, each once, whatever order they were found in", async () => {
+    await writePartition("2026-10-07.jsonl", `{z\n${lines([stored()])}{a\n{z\n`);
+    await ledger.save([stored()]);
+    expect(await readFile(join(dir, "2026-10-07.jsonl"), "utf8")).toBe(
+      `${lines([stored()])}{a\n{z\n`
+    );
   });
 
   it.skipIf(process.platform === "win32")(
@@ -424,13 +458,35 @@ describe("splitting a monthly partition into its days", () => {
     expect(await ledger.load()).toEqual({ ...NOTHING, records: [better, other] });
   });
 
-  it("counts a line of a monthly file that is not a record, and drops it with the split", async () => {
+  it("counts a line of a monthly file that is not a record, and keeps it in the first day of its month", async () => {
     await writePartition("2026-09.jsonl", `${lines(september)}{torn\n`);
     const loaded = await ledger.load();
     expect(loaded.skippedLines).toBe(1);
     expect([...loaded.damaged]).toEqual(["2026-09"]);
     await ledger.save(loaded.records, new Set([...loaded.damaged, ...loaded.unsettled]));
-    expect(await ledger.load()).toEqual({ ...NOTHING, records: september });
+    expect(await partitions()).toEqual([
+      "2026-09-01.jsonl",
+      "2026-09-15.jsonl",
+      "2026-09-30.jsonl",
+    ]);
+    expect(await readFile(join(dir, "2026-09-01.jsonl"), "utf8")).toBe(
+      `${lines(september.slice(0, 1))}{torn\n`
+    );
+    expect((await ledger.load()).skippedLines).toBe(1);
+  });
+
+  it("keeps a monthly file's line once, after a crash between its first day and the file's removal", async () => {
+    await writePartition("2026-09.jsonl", `${lines(september)}{torn\n`);
+    const crashing = new UsageLedgerAdapter(dir, new FailingStorage(2));
+    await expect(crashing.save(september, new Set(["2026-09"]))).rejects.toThrow("disk full");
+    expect(await readFile(join(dir, "2026-09-01.jsonl"), "utf8")).toContain("{torn");
+    expect(await partitions()).toContain("2026-09.jsonl");
+    const loaded = await ledger.load();
+    await ledger.save(loaded.records, new Set([...loaded.damaged, ...loaded.unsettled]));
+    expect(await readFile(join(dir, "2026-09-01.jsonl"), "utf8")).toBe(
+      `${lines(september.slice(0, 1))}{torn\n`
+    );
+    expect(await partitions()).not.toContain("2026-09.jsonl");
   });
 });
 
@@ -497,5 +553,73 @@ describe("writing under the lock", () => {
       })
     ).rejects.toThrow("boom");
     expect(await readdir(dir)).not.toContain(".lock");
+  });
+});
+
+describe("what was measured and left out, beside the ledger", () => {
+  const FILE = () => join(dir, "left-out.txt");
+
+  it("holds nothing before anything is kept, and creates nothing", async () => {
+    expect(await ledger.leftOut.counts()).toEqual({ undated: 0, unrecognised: 0 });
+    await expect(readdir(root)).resolves.toEqual([]);
+  });
+
+  it("keeps each thing once, by a hash, in text order, and never its text", async () => {
+    await ledger.leftOut.add([
+      { reason: "unrecognised", of: "{secret prompt" },
+      { reason: "undated", of: "claude-code\u0000msg_A:req_A" },
+      { reason: "unrecognised", of: "{secret prompt" },
+    ]);
+    const first = await readFile(FILE(), "utf8");
+    await ledger.leftOut.add([{ reason: "undated", of: "claude-code\u0000msg_A:req_A" }]);
+    const text = await readFile(FILE(), "utf8");
+    expect(text).toBe(first);
+    expect(text).not.toContain("secret");
+    expect(text).not.toContain("msg_A");
+    const found = text.split("\n").slice(0, -1);
+    expect(found).toHaveLength(2);
+    expect(found).toEqual([...found].sort());
+    for (const entry of found) expect(entry).toMatch(/^(undated|unrecognised) [0-9a-f]{32}$/);
+    expect(await ledger.leftOut.counts()).toEqual({ undated: 1, unrecognised: 1 });
+  });
+
+  it("tells two things of one reason apart by what they are", async () => {
+    await ledger.leftOut.add([
+      { reason: "undated", of: "claude-code\u0000a" },
+      { reason: "undated", of: "claude-code\u0000b" },
+    ]);
+    expect(await ledger.leftOut.counts()).toEqual({ undated: 2, unrecognised: 0 });
+  });
+
+  it("names a thing by its reason and what it is, so two reasons of one text are two", async () => {
+    await ledger.leftOut.add([
+      { reason: "undated", of: "x" },
+      { reason: "unrecognised", of: "x" },
+    ]);
+    expect(await ledger.leftOut.counts()).toEqual({ undated: 1, unrecognised: 1 });
+  });
+
+  it("keeps a line it does not know, and counts only its own", async () => {
+    await new PrivateStorageAdapter().ensureDirectory(dir);
+    await writeFile(FILE(), "zz-later 0123\nconstructor 1\n");
+    await ledger.leftOut.add([{ reason: "undated", of: "k" }]);
+    const text = await readFile(FILE(), "utf8");
+    expect(text).toContain("zz-later 0123\n");
+    expect(text).toContain("constructor 1\n");
+    expect(await ledger.leftOut.counts()).toEqual({ undated: 1, unrecognised: 0 });
+  });
+
+  it("writes nothing when nothing new is added", async () => {
+    await ledger.leftOut.add([{ reason: "undated", of: "k" }]);
+    const before = await stat(FILE());
+    await ledger.leftOut.add([{ reason: "undated", of: "k" }]);
+    expect((await stat(FILE())).ino).toBe(before.ino);
+  });
+
+  it("is no partition: the ledger neither loads it nor removes it", async () => {
+    await ledger.leftOut.add([{ reason: "undated", of: "k" }]);
+    await ledger.save([stored()]);
+    expect((await ledger.load()).skippedLines).toBe(0);
+    expect(await readdir(dir)).toContain("left-out.txt");
   });
 });

@@ -1,6 +1,6 @@
 import type { PersonIdentityStore } from "../../domain/ports/identity/person-identity-store.js";
 import type { RepositoryLocator } from "../../domain/ports/repository-locator.js";
-import type { UsageLedger } from "../../domain/ports/usage-ledger.js";
+import type { LeftOutReason, UsageLedger } from "../../domain/ports/usage-ledger.js";
 import { attribute } from "../../domain/report/attribution.js";
 import { inPeriod, type Period, windowOf } from "../../domain/report/period.js";
 import {
@@ -58,6 +58,9 @@ export interface ReportCoverage {
   /** Lines of the partitions read that were not records: a bounded report reads its period
    * and the day on each side. */
   readonly skippedLedgerLines: number;
+  /** What every ingest so far, whoever ran it, measured and could not store, by reason: none of
+   * it has a day, so every report counts all of it. */
+  readonly leftOut: Readonly<Record<LeftOutReason, number>>;
 }
 
 export type ReportResult =
@@ -117,10 +120,12 @@ export class ReportUsageUseCase {
     if (this.options.refusedByEnvironment) return { status: "refused" };
     const located = here === undefined ? undefined : await this.repositoryIn(here);
     if (located === null) return { status: "not-a-repository" };
-    const ingested = await this.ingest.execute();
-    const held = await this.ledger.exclusively(() =>
-      settleLedger(this.ledger, windowOf(request.period))
-    );
+    const { filesRead, unrecognised, notStored, consentLogDamaged, oldestTranscriptAt } =
+      await this.ingest.execute();
+    const [held, leftOut] = await this.ledger.exclusively(async () => [
+      await settleLedger(this.ledger, windowOf(request.period)),
+      await this.ledger.leftOut.counts(),
+    ]);
     const records = held.records.filter((record) => inPeriod(record.at, request.period));
     const session = resolvedIn(records, "session", asked.session);
     if ("status" in session) return session;
@@ -140,13 +145,14 @@ export class ReportUsageUseCase {
       filters,
       report: buildReport(selected, facts, person, request.axis),
       coverage: {
-        filesRead: ingested.filesRead,
+        filesRead,
         records: records.length,
-        unrecognised: ingested.unrecognised,
-        notStored: ingested.notStored,
-        consentLogDamaged: ingested.consentLogDamaged,
-        oldestTranscriptAt: ingested.oldestTranscriptAt,
+        unrecognised,
+        notStored,
+        consentLogDamaged,
+        oldestTranscriptAt,
         skippedLedgerLines: held.skippedLines,
+        leftOut,
       },
     };
   }

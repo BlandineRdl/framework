@@ -423,6 +423,45 @@ describe("the telemetry journey, on the built binary", () => {
     expect(prompt({ id: S_OTHER }, "start").stdout).toBe("");
   });
 
+  it("says in a report what the catch-up hook measured and could not store, and keeps nothing of a clone that never opted in", async () => {
+    await optIn();
+    const elsewhere = join(env.tempDir, "elsewhere");
+    initRepository(elsewhere, gitEnv, { remote: "git@github.com:acme/other.git" });
+    // After `on`: what is made before it is never stored.
+    const base = Date.now() + 60_000;
+    const project = join(claude, "projects", "sandbox");
+    await mkdir(project, { recursive: true });
+    const [first, second, third] = CALLS as [Call, Call, Call];
+    const at = (cwd: string) => (line: string) =>
+      line.replace(JSON.stringify(repo), JSON.stringify(cwd));
+    const junk = (cwd: string) => JSON.stringify({ type: "assistant", cwd, message: { usage: 7 } });
+    const undated = (call: Call) =>
+      usageLine(call, base).replace(/"timestamp":"[^"]*"/, '"timestamp":"not a time"');
+    // Only the clone that never opted in: nothing of it is kept.
+    await writeFile(
+      join(project, `${S_OTHER}.jsonl`),
+      `${[at(elsewhere)(usageLine(second, base)), junk(elsewhere), at(elsewhere)(undated(third)), "{torn"].join("\n")}\n`
+    );
+    runHook("catch-up.cjs", { id: S_MAIN }, { hook_event_name: "SessionStart", source: "startup" });
+    expect(existsSync(join(telemetry, "ledger", "left-out.txt"))).toBe(false);
+
+    await writeFile(
+      join(project, `${S_MAIN}.jsonl`),
+      `${[usageLine(first, base), junk(repo), undated(third)].join("\n")}\n`
+    );
+    runHook("catch-up.cjs", { id: S_MAIN }, { hook_event_name: "SessionStart", source: "startup" });
+    const run = await aidd(["report", "--json"]);
+    expect(run.exitCode, run.stderr).toBe(0);
+    const { coverage } = JSON.parse(run.stdout) as {
+      coverage: { files_read: number; records: number; left_out: Record<string, number> };
+    };
+    expect(coverage).toMatchObject({
+      files_read: 0,
+      records: 1,
+      left_out: { undated: 1, unrecognised: 1 },
+    });
+  });
+
   it("shows nothing, blocks nothing and stores nothing in a project that never opted in", async () => {
     const main: Session = { id: S_MAIN };
     expect(sessionStart(main, "startup").stdout).toBe("");

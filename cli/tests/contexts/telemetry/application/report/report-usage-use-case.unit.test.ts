@@ -8,6 +8,7 @@ import {
   type RequestedFilters,
 } from "../../../../../src/contexts/telemetry/application/report/report-usage-use-case.js";
 import { SnapshotBindingsUseCase } from "../../../../../src/contexts/telemetry/application/snapshot-bindings-use-case.js";
+import { cloneKey } from "../../../../../src/contexts/telemetry/domain/consent/clone-identity.js";
 import {
   declarationOf,
   type SessionCarry,
@@ -105,7 +106,7 @@ function setup(options: { refused?: boolean } = {}) {
     locator,
     { refusedByEnvironment: options.refused ?? false }
   );
-  return { transcripts, ledger, bindings, sessions, identity, report, events, locator };
+  return { transcripts, ledger, bindings, sessions, identity, report, events, locator, consents };
 }
 
 async function rows(s: ReturnType<typeof setup>, axis: ReportAxis, period = ANY) {
@@ -122,7 +123,7 @@ describe("reporting usage", () => {
     s.ledger.unsettled = new Set(["2026-10-06", "2026-10-07"]);
     s.events.length = 0;
     await s.report.execute({ axis: "total", period: ANY });
-    expect(s.events.slice(-4)).toEqual(["lock", "load", "save", "unlock"]);
+    expect(s.events.slice(-5)).toEqual(["lock", "load", "save", "left-out", "unlock"]);
     expect(s.ledger.savedPartitions).toEqual(new Set(["2026-10-06", "2026-10-07"]));
     expect(s.ledger.records).toHaveLength(1);
   });
@@ -136,13 +137,13 @@ describe("reporting usage", () => {
     expect(s.events).not.toContain("save");
   });
 
-  it("repairs a damaged partition outside any ingest window", async () => {
+  it("rewrites a damaged partition outside any ingest window, and still counts what it keeps", async () => {
     const s = setup();
     s.ledger.damaged.add("2026-01-15");
     const result = await s.report.execute({ axis: "total", period: ANY });
     expect(result).toMatchObject({ coverage: { skippedLedgerLines: 1 } });
     expect(s.ledger.savedPartitions).toEqual(new Set(["2026-01-15"]));
-    expect((await s.ledger.load()).skippedLines).toBe(0);
+    expect((await s.ledger.load()).skippedLines).toBe(1);
   });
 
   it("loads and settles only a bounded period and the day on each side of it", async () => {
@@ -533,5 +534,51 @@ describe("narrowing a report", () => {
     // @ts-expect-error `.` names the repository: a repository typed beside it is refused.
     const both: RequestedFilters = { ...NO_FILTERS, repository: "r", here: "/work/a" };
     expect([typed, here, both]).toHaveLength(3);
+  });
+});
+
+describe("saying what was measured and left out, whoever ingested it", () => {
+  const OCTOBER: Period = { from: "2026-10-01", to: "2026-10-31" };
+
+  it("counts what every ingest kept, in every report, bounded or not, though its own reads nothing", async () => {
+    const s = setup();
+    s.ledger.leftOut.lines.add("undated a").add("unrecognised b").add("unrecognised c");
+    for (const period of [OCTOBER, ANY]) {
+      const result = await s.report.execute({ axis: "total", period });
+      expect(result).toMatchObject({
+        coverage: { filesRead: 0, unrecognised: 0, leftOut: { undated: 1, unrecognised: 2 } },
+      });
+    }
+  });
+
+  it("says nothing was left out when nothing was kept", async () => {
+    const s = setup();
+    const result = await s.report.execute({ axis: "total", period: OCTOBER });
+    expect(result).toMatchObject({ coverage: { leftOut: { undated: 0, unrecognised: 0 } } });
+  });
+
+  it("reads what was kept under the ledger lock, after its own ingest", async () => {
+    const s = setup();
+    s.transcripts.files.set("/t/1.jsonl", [line("U", 1, "not a time")]);
+    const result = await s.report.execute({ axis: "total", period: ANY });
+    expect(result).toMatchObject({ coverage: { leftOut: { undated: 1 } } });
+    expect(s.events.slice(-3)).toEqual(["load", "left-out", "unlock"]);
+  });
+});
+
+describe("a call whose consent cannot be read yet", () => {
+  it("is said by every report's own read while it cannot be, then counted once it can", async () => {
+    const s = setup();
+    s.transcripts.files.set("/t/1.jsonl", [line("A", 10, "2026-10-07T10:00:00.000Z")]);
+    s.consents.unreadableClones.add(cloneKey(cloneOf("/work/a/.git")));
+    for (const _ of [1, 2]) {
+      expect(await s.report.execute({ axis: "total", period: ANY })).toMatchObject({
+        coverage: { records: 0, notStored: { "unreadable-consent": 1 } },
+      });
+    }
+    s.consents.unreadableClones.clear();
+    expect(await s.report.execute({ axis: "total", period: ANY })).toMatchObject({
+      coverage: { records: 1, notStored: { "unreadable-consent": 0 } },
+    });
   });
 });
