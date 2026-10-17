@@ -165,6 +165,10 @@ export class InMemoryLedger implements UsageLedger {
     for (const partition of partitions ?? [...this.unsettled]) this.unsettled.delete(partition);
   }
 
+  async leaveOutRequestless(): Promise<void> {
+    this.events.push("leave-out-requestless");
+  }
+
   async positions(): Promise<ReadonlyMap<string, TranscriptPosition>> {
     return new Map(this.stored);
   }
@@ -195,7 +199,11 @@ export class InMemoryLeftOut implements LeftOutStore {
     this.events.push("left-out");
     const count = (reason: LeftOutReason) =>
       [...this.lines].filter((line) => line.startsWith(`${reason} `)).length;
-    return { undated: count("undated"), unrecognised: count("unrecognised") };
+    return {
+      undated: count("undated"),
+      unrecognised: count("unrecognised"),
+      requestless: count("requestless"),
+    };
   }
 }
 
