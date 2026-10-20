@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ArtifactContract } from "../../../../../../src/contexts/tools/domain/build-contract.js";
 import { buildKiloFlatContract } from "../../../../../../src/contexts/tools/domain/profiles/kilo/build.js";
-import { KiloDualConfigError } from "../../../../../../src/kernel/errors.js";
+import {
+  KiloDualConfigError,
+  PathScopedRuleUnsupportedError,
+} from "../../../../../../src/kernel/errors.js";
 import { InMemoryFileAdapter } from "../../../../../helpers/ports/in-memory-file-adapter.js";
 
 function supported(artifact: ArtifactContract): Extract<ArtifactContract, { supported: true }> {
@@ -130,5 +133,81 @@ describe("buildKiloFlatContract", () => {
     ).rejects.toThrow(KiloDualConfigError);
     expect(fs.getFile("/out/.kilo/kilo.json")).toBe("{}");
     expect(fs.getFile("/out/.kilo/kilo.jsonc")).toBe("{}");
+  });
+});
+
+describe("Kilo flat Rules", () => {
+  const rules = () => supported(buildKiloFlatContract().artifacts.rules);
+  const asset = {
+    loadConfigAsset: () => ({ $schema: "https://app.kilo.ai/config.json" }),
+    loadSchema: () => ({}),
+  };
+  const validator = { validate: () => undefined };
+
+  it("emits each all-files Rule as one plugin-prefixed file under .kilo/rules", () => {
+    expect(rules().path("aidd-test", "rules/01-standards/naming.md")).toBe(
+      ".kilo/rules/aidd-test-01-standards-naming.md"
+    );
+  });
+
+  it("keeps an all-files Rule's content and repoints its relative links", () => {
+    const content =
+      "---\ndescription: naming\n---\nSee [errors](./errors.md) and @./errors.md first\n";
+    expect(rules().transform?.(content, "aidd-test", "01-standards/naming.md")).toBe(
+      "---\ndescription: naming\n---\nSee [errors](./aidd-test-01-standards-errors.md) and " +
+        "[errors.md](./aidd-test-01-standards-errors.md) first\n"
+    );
+  });
+
+  it("refuses a path-scoped Rule, naming the Rule and its scope", () => {
+    const content = '---\npaths:\n  - "src/**/*.ts"\n---\nTyped code only.\n';
+    const transform = () => rules().transform?.(content, "aidd-test", "01-standards/ts.md");
+    expect(transform).toThrow(PathScopedRuleUnsupportedError);
+    expect(transform).toThrow(
+      /'rules\/01-standards\/ts\.md' in plugin 'aidd-test'.*src\/\*\*\/\*\.ts/
+    );
+  });
+
+  it("appends sorted Rule paths after the user's JSONC instructions, unchanged on rebuild", async () => {
+    const fs = new InMemoryFileAdapter({
+      "/out/.kilo/kilo.jsonc": '{\n  // mine\n  "instructions": ["z.md", "a.md"],\n}',
+      "/source/plugins/aidd-test/rules/02-b/two.md": "two",
+      "/source/plugins/aidd-test/rules/01-a/one.md": "one",
+      "/source/plugins/aidd-test/rules/01-a/notes.txt": "not a Rule",
+      "/source/plugins/aidd-dev/rules/style.md": "style",
+    });
+    const emit = buildKiloFlatContract().emitConfigArtifact;
+    await emit?.(["aidd-test", "aidd-dev"], "/out", "/source", fs, validator, asset);
+    const once = fs.getFile("/out/.kilo/kilo.jsonc");
+    await emit?.(["aidd-test", "aidd-dev"], "/out", "/source", fs, validator, asset);
+
+    expect(JSON.parse(once ?? "null").instructions).toEqual([
+      "z.md",
+      "a.md",
+      ".kilo/rules/aidd-dev-style.md",
+      ".kilo/rules/aidd-test-01-a-one.md",
+      ".kilo/rules/aidd-test-02-b-two.md",
+    ]);
+    expect(fs.getFile("/out/.kilo/kilo.jsonc")).toBe(once);
+  });
+
+  it("merges the Rule paths into an existing .kilo/kilo.json", async () => {
+    const fs = new InMemoryFileAdapter({
+      "/out/.kilo/kilo.json": JSON.stringify({ instructions: ["mine.md"] }),
+      "/source/plugins/aidd-test/rules/style.md": "style",
+    });
+    await buildKiloFlatContract().emitConfigArtifact?.(
+      ["aidd-test"],
+      "/out",
+      "/source",
+      fs,
+      validator,
+      asset
+    );
+    expect(JSON.parse(fs.getFile("/out/.kilo/kilo.json") ?? "null").instructions).toEqual([
+      "mine.md",
+      ".kilo/rules/aidd-test-style.md",
+    ]);
+    expect(fs.getFile("/out/.kilo/kilo.jsonc")).toBeUndefined();
   });
 });
