@@ -12,6 +12,7 @@ import { FlatBuildStrategy } from "../../../../../src/contexts/translate/applica
 import { FrameworkBuildUseCase } from "../../../../../src/contexts/translate/application/translate-source.js";
 import { AjvSchemaValidatorAdapter } from "../../../../../src/contexts/translate/infrastructure/schema-validator.js";
 import {
+  FlatRuleNameClashError,
   FlatTargetExistsError,
   FrameworkPlaceholderInPluginError,
   JsonSchemaValidationError,
@@ -904,9 +905,32 @@ describe("the Rules a flat layout writes", () => {
       [`${STUB_PLUGIN_SRC}/rules/a/b-c.md`]: "one",
       [`${STUB_PLUGIN_SRC}/rules/a-b/c.md`]: "two",
     });
-    await expect(
-      stubStrategy(memFs, buildKiloFlatContract()).writeRules("aidd-test", STUB_PLUGIN_SRC)
-    ).rejects.toThrow(FlatTargetExistsError);
+    const error = await stubStrategy(memFs, buildKiloFlatContract())
+      .writeRules("aidd-test", STUB_PLUGIN_SRC)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(FlatRuleNameClashError);
+    const message = (error as Error).message;
+    expect(message).toContain("aidd-test/rules/a/b-c.md");
+    expect(message).toContain("aidd-test/rules/a-b/c.md");
+    expect(message).toContain(".kilo/rules/aidd-test-a-b-c.md");
+    expect(message).not.toContain("--force");
     expect(writtenUnder(memFs, STUB_OUT)).toEqual({});
+  });
+
+  it("names both plugins' Rules when they flatten to one filename", async () => {
+    const memFs = new InMemoryFileAdapter({
+      "/src/plugins/aidd/rules/x-y.md": "one",
+      "/src/plugins/aidd-x/rules/y.md": "two",
+    });
+    const strategy = stubStrategy(memFs, buildKiloFlatContract());
+    await strategy.writeRules("aidd", "/src/plugins/aidd");
+    await expect(strategy.writeRules("aidd-x", "/src/plugins/aidd-x")).rejects.toThrow(
+      new FlatRuleNameClashError(
+        "aidd/rules/x-y.md",
+        "aidd-x/rules/y.md",
+        ".kilo/rules/aidd-x-y.md"
+      )
+    );
+    expect(memFs.getFile(`${STUB_OUT}/.kilo/rules/aidd-x-y.md`)).toBe("one");
   });
 });

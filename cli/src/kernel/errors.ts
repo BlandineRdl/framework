@@ -436,6 +436,16 @@ export class PathScopedRuleUnsupportedError extends Error {
   }
 }
 
+export class FlatRuleNameClashError extends Error {
+  constructor(first: string, second: string, destination: string) {
+    super(
+      `Flat build conflict: Rules '${first}' and '${second}' both flatten to '${destination}'. ` +
+        "Rename one of them."
+    );
+    this.name = "FlatRuleNameClashError";
+  }
+}
+
 export class MarketplaceOutDirNotEmptyError extends Error {
   constructor(outDir: string) {
     super(

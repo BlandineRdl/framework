@@ -1,5 +1,9 @@
 import { basename, dirname, join, relative } from "node:path";
-import { FlatTargetExistsError, OutDirNotDirectoryError } from "../../../../kernel/errors.js";
+import {
+  FlatRuleNameClashError,
+  FlatTargetExistsError,
+  OutDirNotDirectoryError,
+} from "../../../../kernel/errors.js";
 import { parseFrontmatter, serializeFrontmatter } from "../../../../kernel/markdown.js";
 import { rewriteClaudeRootInJson } from "../../../../kernel/materialization/claude-root-path-rewrite.js";
 import { flatMcpKeyPrefix } from "../../../../kernel/materialization/flat-paths.js";
@@ -23,7 +27,7 @@ import type { BuildOutputStrategy, SourceMarketplace } from "./build-output-stra
 
 export class FlatBuildStrategy implements BuildOutputStrategy {
   private sourceDir = "";
-  private readonly ruleDestinations = new Set<string>();
+  private readonly ruleDestinations = new Map<string, string>();
 
   constructor(
     private readonly fs: FileReader & FileWriter,
@@ -167,8 +171,10 @@ export class FlatBuildStrategy implements BuildOutputStrategy {
     const flatRelPath = artifact.path(pluginName, srcRelPath);
     const destPath = join(this.absOut, flatRelPath);
     // Two Rules flattening to one name would overwrite each other even under --force.
-    if (this.ruleDestinations.has(destPath)) throw new FlatTargetExistsError(destPath, pluginName);
-    this.ruleDestinations.add(destPath);
+    const ruleId = `${pluginName}/${srcRelPath}`;
+    const clashing = this.ruleDestinations.get(destPath);
+    if (clashing !== undefined) throw new FlatRuleNameClashError(clashing, ruleId, flatRelPath);
+    this.ruleDestinations.set(destPath, ruleId);
     await this.checkCollision(destPath, pluginName);
     const outContent = artifact.transform
       ? artifact.transform(content, pluginName, ruleRel)
