@@ -90,11 +90,10 @@ function frameworkBuildFactoryFor(
           av,
           d.assetProvider,
           buildContract(),
-          ctx.force,
+          { force: ctx.force, inexpressibleRules: ctx.inexpressibleRules },
           ctx.outDir,
           isDirectory,
-          d.logger,
-          ctx.inexpressibleRules
+          d.logger
         )
     );
 }

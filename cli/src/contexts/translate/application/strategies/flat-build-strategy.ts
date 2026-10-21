@@ -31,6 +31,12 @@ export type InexpressibleRulePolicy =
   | { readonly kind: "fail" }
   | { readonly kind: "skip"; readonly warn: Logger };
 
+/** The caller's choices for one flat build: overwrite existing files, and treat an unscopable Rule. */
+export interface FlatBuildOptions {
+  readonly force: boolean;
+  readonly inexpressibleRules?: InexpressibleRulePolicy;
+}
+
 export class FlatBuildStrategy implements BuildOutputStrategy {
   private sourceDir = "";
   private readonly ruleDestinations = new Map<string, string>();
@@ -40,12 +46,19 @@ export class FlatBuildStrategy implements BuildOutputStrategy {
     private readonly jsonSchemaValidator: JsonSchemaValidator,
     private readonly assetProvider: AssetProvider,
     private readonly contract: ToolBuildContract,
-    private readonly force: boolean,
+    private readonly options: FlatBuildOptions,
     private readonly absOut: string,
     private readonly isDirectory: (path: string) => Promise<boolean>,
-    private readonly logger?: Logger,
-    private readonly inexpressibleRules: InexpressibleRulePolicy = { kind: "fail" }
+    private readonly logger?: Logger
   ) {}
+
+  private get force(): boolean {
+    return this.options.force;
+  }
+
+  private get inexpressibleRules(): InexpressibleRulePolicy {
+    return this.options.inexpressibleRules ?? { kind: "fail" };
+  }
 
   async preBuild(outDir: string, sourceDir: string): Promise<void> {
     const exists = await this.fs.fileExists(outDir);

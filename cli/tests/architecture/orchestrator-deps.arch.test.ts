@@ -49,9 +49,7 @@ const BASELINE: readonly { readonly path: string; readonly injected: number }[] 
     injected: 10,
   },
   { path: "src/contexts/framework/application/plugin/plugin-add-use-case.ts", injected: 9 },
-  // Ports and caller-chosen values, no use case: the ninth is the caller's policy for a Rule the
-  // target cannot scope, which a translate fails on and an install skips with a warning.
-  { path: "src/contexts/translate/application/strategies/flat-build-strategy.ts", injected: 9 },
+  { path: "src/contexts/translate/application/strategies/flat-build-strategy.ts", injected: 8 },
   {
     path: "src/contexts/framework/application/doctor/doctor-registration-use-case.ts",
     injected: 7,

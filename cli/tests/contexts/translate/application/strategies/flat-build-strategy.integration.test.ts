@@ -114,7 +114,7 @@ function makeUseCase(
     av,
     ap,
     buildCopilotFlatContract(),
-    force,
+    { force },
     ABS_OUT,
     makeIsDirectory(memFs)
   );
@@ -249,7 +249,7 @@ describe("FlatOutputStrategy integration", () => {
         new AjvSchemaValidatorAdapter(),
         ap,
         buildCopilotFlatContract(),
-        false,
+        { force: false },
         "/nonexistent",
         makeIsDirectory(emptyFs)
       );
@@ -270,7 +270,7 @@ describe("FlatOutputStrategy integration", () => {
         new AjvSchemaValidatorAdapter(),
         ap2,
         buildCopilotFlatContract(),
-        false,
+        { force: false },
         ABS_OUT,
         makeIsDirectory(fileFs)
       );
@@ -326,7 +326,7 @@ describe("FlatOutputStrategy integration", () => {
         new AjvSchemaValidatorAdapter(),
         makeAssetProvider(),
         buildCopilotFlatContract(),
-        false,
+        { force: false },
         ABS_OUT,
         makeIsDirectory(memFs)
       );
@@ -345,7 +345,7 @@ describe("FlatOutputStrategy integration", () => {
         new AjvSchemaValidatorAdapter(),
         ap,
         buildOpencodeFlatContract(),
-        force,
+        { force },
         ABS_OUT,
         makeIsDirectory(fs)
       );
@@ -395,7 +395,7 @@ describe("FlatOutputStrategy integration", () => {
         new AjvSchemaValidatorAdapter(),
         makeAssetProvider(),
         { ...base, artifacts: { ...base.artifacts, hooks: { supported: false } } },
-        false,
+        { force: false },
         ABS_OUT,
         makeIsDirectory(memFs),
         captLogger
@@ -460,11 +460,10 @@ function stubStrategy(
     new AjvSchemaValidatorAdapter(),
     makeAssetProvider(),
     contract,
-    false,
+    { force: false, inexpressibleRules },
     STUB_OUT,
     makeIsDirectory(memFs),
-    logger,
-    inexpressibleRules
+    logger
   );
 }
 
@@ -794,11 +793,10 @@ describe("the Rules a flat layout writes", () => {
       new AjvSchemaValidatorAdapter(),
       ap,
       contract,
-      true,
+      { force: true, inexpressibleRules },
       ABS_OUT,
       makeIsDirectory(memFs),
-      logger,
-      inexpressibleRules
+      logger
     );
     const uc = new FrameworkBuildUseCase(memFs, makeValidator(), ap, logger, strategy);
     return uc.execute({ sourceDir: FIXTURE_DIR, outDir: ABS_OUT, target });
