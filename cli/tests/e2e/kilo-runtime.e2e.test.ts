@@ -356,7 +356,7 @@ describeKiloRuntime("E2E: real Kilo runtime", () => {
         `import { appendFileSync } from "node:fs"; import { join } from "node:path"; let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => { const payload = JSON.parse(input); appendFileSync(join(payload.cwd, "payloads.jsonl"), JSON.stringify({ pid: process.pid, payload }) + "\\n"); });`
       );
       await mkdir(join(proofPlugin, "rules"));
-      await writeFile(join(proofPlugin, "rules", "runtime.md"), "KILO_RULE_MARKER_868\n");
+      await writeFile(join(proofPlugin, "rules", "runtime.md"), "KILO_RULE_MARKER\n");
       await writeFile(
         join(proofPlugin, "hooks", "hooks.json"),
         JSON.stringify({
@@ -412,7 +412,7 @@ describeKiloRuntime("E2E: real Kilo runtime", () => {
       expect(JSON.parse(deliveredConfig).instructions).toContain(
         ".kilo/rules/runtime-proof-runtime.md"
       );
-      expect(JSON.stringify(model.requests)).toContain("KILO_RULE_MARKER_868");
+      expect(JSON.stringify(model.requests)).toContain("KILO_RULE_MARKER");
       expect(model.requests.flatMap((request) => request.messages)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

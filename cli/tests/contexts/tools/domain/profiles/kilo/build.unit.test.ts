@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ArtifactContract } from "../../../../../../src/contexts/tools/domain/build-contract.js";
 import { buildKiloFlatContract } from "../../../../../../src/contexts/tools/domain/profiles/kilo/build.js";
-import {
-  KiloDualConfigError,
-  PathScopedRuleUnsupportedError,
-} from "../../../../../../src/kernel/errors.js";
+import { KiloDualConfigError } from "../../../../../../src/kernel/errors.js";
 import { InMemoryFileAdapter } from "../../../../../helpers/ports/in-memory-file-adapter.js";
 
 function supported(artifact: ArtifactContract): Extract<ArtifactContract, { supported: true }> {
@@ -159,13 +156,28 @@ describe("Kilo flat Rules", () => {
     );
   });
 
-  it("refuses a path-scoped Rule, naming the Rule and its scope", () => {
-    const content = '---\npaths:\n  - "src/**/*.ts"\n---\nTyped code only.\n';
-    const transform = () => rules().transform?.(content, "aidd-test", "01-standards/ts.md");
-    expect(transform).toThrow(PathScopedRuleUnsupportedError);
-    expect(transform).toThrow(
-      /'rules\/01-standards\/ts\.md' in plugin 'aidd-test'.*src\/\*\*\/\*\.ts/
+  it("reports a path-scoped Rule's scope as one Kilo cannot express, and none for an all-files Rule", () => {
+    const scoped = '---\npaths:\n  - "src/**/*.ts"\n---\nTyped code only.\n';
+    expect(rules().inexpressibleScope?.(scoped)).toEqual(["src/**/*.ts"]);
+    expect(rules().inexpressibleScope?.("---\ndescription: x\n---\nAll.\n")).toBeUndefined();
+  });
+
+  it("never lists a path-scoped Rule in instructions", async () => {
+    const fs = new InMemoryFileAdapter({
+      "/source/plugins/aidd-test/rules/all.md": "all",
+      "/source/plugins/aidd-test/rules/ts.md": "---\npaths:\n  - src/**/*.ts\n---\nTyped.\n",
+    });
+    await buildKiloFlatContract().emitConfigArtifact?.(
+      ["aidd-test"],
+      "/out",
+      "/source",
+      fs,
+      validator,
+      asset
     );
+    expect(JSON.parse(fs.getFile("/out/.kilo/kilo.jsonc") ?? "null").instructions).toEqual([
+      ".kilo/rules/aidd-test-all.md",
+    ]);
   });
 
   it("appends sorted Rule paths after the user's JSONC instructions, unchanged on rebuild", async () => {

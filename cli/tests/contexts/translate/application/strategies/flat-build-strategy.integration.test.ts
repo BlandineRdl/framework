@@ -8,7 +8,10 @@ import type { JsonSchemaValidator } from "../../../../../src/contexts/tools/doma
 import { buildCopilotFlatContract } from "../../../../../src/contexts/tools/domain/profiles/copilot/build.js";
 import { buildKiloFlatContract } from "../../../../../src/contexts/tools/domain/profiles/kilo/build.js";
 import { buildOpencodeFlatContract } from "../../../../../src/contexts/tools/domain/profiles/opencode/build.js";
-import { FlatBuildStrategy } from "../../../../../src/contexts/translate/application/strategies/flat-build-strategy.js";
+import {
+  FlatBuildStrategy,
+  type InexpressibleRulePolicy,
+} from "../../../../../src/contexts/translate/application/strategies/flat-build-strategy.js";
 import { FrameworkBuildUseCase } from "../../../../../src/contexts/translate/application/translate-source.js";
 import { AjvSchemaValidatorAdapter } from "../../../../../src/contexts/translate/infrastructure/schema-validator.js";
 import {
@@ -449,7 +452,8 @@ function stubContract(over: Partial<ToolBuildContract> = {}): ToolBuildContract 
 function stubStrategy(
   memFs: InMemoryFileAdapter,
   contract: ToolBuildContract,
-  logger?: CapturingLogger
+  logger?: CapturingLogger,
+  inexpressibleRules?: InexpressibleRulePolicy
 ): FlatBuildStrategy {
   return new FlatBuildStrategy(
     memFs,
@@ -459,7 +463,8 @@ function stubStrategy(
     false,
     STUB_OUT,
     makeIsDirectory(memFs),
-    logger
+    logger,
+    inexpressibleRules
   );
 }
 
@@ -780,7 +785,8 @@ describe("the Rules a flat layout writes", () => {
     memFs: InMemoryFileAdapter,
     contract: ToolBuildContract,
     target: "kilo" | "opencode",
-    logger = new CapturingLogger()
+    logger = new CapturingLogger(),
+    inexpressibleRules?: InexpressibleRulePolicy
   ) {
     const ap = makeAssetProvider();
     const strategy = new FlatBuildStrategy(
@@ -791,7 +797,8 @@ describe("the Rules a flat layout writes", () => {
       true,
       ABS_OUT,
       makeIsDirectory(memFs),
-      logger
+      logger,
+      inexpressibleRules
     );
     const uc = new FrameworkBuildUseCase(memFs, makeValidator(), ap, logger, strategy);
     return uc.execute({ sourceDir: FIXTURE_DIR, outDir: ABS_OUT, target });
@@ -898,6 +905,54 @@ describe("the Rules a flat layout writes", () => {
       stubStrategy(memFs, buildKiloFlatContract()).writeRules("aidd-test", STUB_PLUGIN_SRC)
     ).rejects.toThrow(FlatTargetExistsError);
     expect(memFs.getFile(`${STUB_OUT}/.kilo/rules/aidd-test-style.md`)).toBe("user-owned");
+  });
+
+  it("skips and names a path-scoped Rule when the caller asks to skip it", async () => {
+    const memFs = new InMemoryFileAdapter({
+      [`${STUB_PLUGIN_SRC}/rules/all.md`]: "everywhere",
+      [`${STUB_PLUGIN_SRC}/rules/ts.md`]: "---\npaths:\n  - src/**/*.ts\n---\nTyped.\n",
+    });
+    const warnings = new CapturingLogger();
+    const written = await stubStrategy(memFs, buildKiloFlatContract(), undefined, {
+      kind: "skip",
+      warn: warnings,
+    }).writeRules("aidd-test", STUB_PLUGIN_SRC);
+    expect(written).toBe(1);
+    expect(writtenUnder(memFs, STUB_OUT)).toEqual({
+      [`${STUB_OUT}/.kilo/rules/aidd-test-all.md`]: "everywhere",
+    });
+    expect(warnings.warnMessages).toHaveLength(1);
+    expect(warnings.warnMessages[0]).toContain("'rules/ts.md'");
+    expect(warnings.warnMessages[0]).toContain("'aidd-test'");
+    expect(warnings.warnMessages[0]).toContain("src/**/*.ts");
+  });
+
+  it("lists only the emitted Rules in instructions when path-scoped ones are skipped", async () => {
+    const memFs = await makeSeededFs();
+    memFs.setFile(`${RULES_SRC}/errors.md`, "# Errors\n");
+    const warnings = new CapturingLogger();
+    await fullBuild(memFs, buildKiloFlatContract(), "kilo", new CapturingLogger(), {
+      kind: "skip",
+      warn: warnings,
+    });
+    expect(memFs.listUnder(`${ABS_OUT}/.kilo/rules`)).toEqual([
+      `${ABS_OUT.replaceAll("\\", "/")}/.kilo/rules/aidd-test-01-standards-errors.md`,
+    ]);
+    const config = JSON.parse(memFs.getFile(`${ABS_OUT}/.kilo/kilo.jsonc`) ?? "{}") as {
+      instructions: string[];
+    };
+    expect(config.instructions).toEqual([".kilo/rules/aidd-test-01-standards-errors.md"]);
+    expect(warnings.warnMessages.some((m) => m.includes("rules/01-standards/naming.md"))).toBe(
+      true
+    );
+  });
+
+  it("still fails the build on a path-scoped Rule by default", async () => {
+    const memFs = await makeSeededFs();
+    await expect(fullBuild(memFs, buildKiloFlatContract(), "kilo")).rejects.toThrow(
+      PathScopedRuleUnsupportedError
+    );
+    expect(memFs.listUnder(`${ABS_OUT}/.kilo/rules`)).toEqual([]);
   });
 
   it("refuses two Rules flattening to one filename", async () => {

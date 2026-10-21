@@ -11,7 +11,10 @@ import "../../contexts/tools/domain/profiles/vscode/profile.js";
 import type { ToolBuildContract } from "../../contexts/tools/domain/build-contract.js";
 import type { FileMerger } from "../../contexts/tools/domain/ports/file-merger.js";
 import { buildContractFor } from "../../contexts/tools/domain/registry.js";
-import { FlatBuildStrategy } from "../../contexts/translate/application/strategies/flat-build-strategy.js";
+import {
+  FlatBuildStrategy,
+  type InexpressibleRulePolicy,
+} from "../../contexts/translate/application/strategies/flat-build-strategy.js";
 import { MarketplaceBuildStrategy } from "../../contexts/translate/application/strategies/marketplace-build-strategy.js";
 import { FrameworkBuildUseCase } from "../../contexts/translate/application/translate-source.js";
 import { frameworkBuildTargetModes } from "../../contexts/translate/domain/build-target.js";
@@ -32,6 +35,8 @@ export interface FrameworkBuildContext {
   readonly mode: string;
   readonly outDir: string;
   readonly force: boolean;
+  /** Absent fails the build, as `aidd translate` must. */
+  readonly inexpressibleRules?: InexpressibleRulePolicy;
 }
 
 type FrameworkBuildFactory = (
@@ -88,7 +93,8 @@ function frameworkBuildFactoryFor(
           ctx.force,
           ctx.outDir,
           isDirectory,
-          d.logger
+          d.logger,
+          ctx.inexpressibleRules
         )
     );
 }

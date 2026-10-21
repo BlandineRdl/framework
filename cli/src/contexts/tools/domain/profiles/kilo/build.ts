@@ -2,7 +2,6 @@
  * but Kilo has its own .kilo/ discovery paths and bundled base configuration. */
 
 import { join, relative } from "node:path";
-import { PathScopedRuleUnsupportedError } from "../../../../../kernel/errors.js";
 import { parseFrontmatter, serializeFrontmatter } from "../../../../../kernel/markdown.js";
 import {
   flatHooksPathWithLoaderEntry,
@@ -83,12 +82,12 @@ function transformKiloFlatAgent(content: string, plugin: string, outName: string
 }
 
 // Kilo loads `instructions` for every session: a `paths` scope would silently widen to all files.
+function kiloRulePathScope(content: string): unknown {
+  return parseFrontmatter(content).frontmatter.paths;
+}
+
 function transformKiloFlatRule(content: string, plugin: string, ruleRel: string): string {
   const sourceRel = `rules/${ruleRel}`;
-  const { frontmatter } = parseFrontmatter(content);
-  if (frontmatter.paths !== undefined) {
-    throw new PathScopedRuleUnsupportedError(plugin, sourceRel, frontmatter.paths);
-  }
   return relocateRelativeLinks(content, {
     sourceFilePluginRelative: sourceRel,
     materializedFileRelative: kiloFlatRulePath(plugin, sourceRel),
@@ -107,6 +106,7 @@ async function collectKiloRuleInstructions(
     if (!(await fs.fileExists(rulesSrc))) continue;
     for (const absPath of await fs.listFilesRecursive(rulesSrc)) {
       if (!absPath.endsWith(".md")) continue;
+      if (kiloRulePathScope(await fs.readFile(absPath)) !== undefined) continue;
       const rel = relative(rulesSrc, absPath).replace(/\\/g, "/");
       instructions.push(kiloFlatRulePath(plugin, `rules/${rel}`));
     }
@@ -167,6 +167,7 @@ export function buildKiloFlatContract(): ToolBuildContract {
         supported: true,
         source: { kind: "filteredTree", srcDir: "rules", inputExt: ".md" },
         path: kiloFlatRulePath,
+        inexpressibleScope: kiloRulePathScope,
         transform: transformKiloFlatRule,
       },
       commands: { supported: false },

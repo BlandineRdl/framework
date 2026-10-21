@@ -3,6 +3,7 @@ import {
   FlatRuleNameClashError,
   FlatTargetExistsError,
   OutDirNotDirectoryError,
+  PathScopedRuleUnsupportedError,
 } from "../../../../kernel/errors.js";
 import { parseFrontmatter, serializeFrontmatter } from "../../../../kernel/markdown.js";
 import { rewriteClaudeRootInJson } from "../../../../kernel/materialization/claude-root-path-rewrite.js";
@@ -25,6 +26,11 @@ import {
 import { assertNoToolsPlaceholder } from "../shared-plugin-helpers.js";
 import type { BuildOutputStrategy, SourceMarketplace } from "./build-output-strategy.js";
 
+/** A Rule scoped beyond what the target expresses fails the build, or is skipped with a warning. */
+export type InexpressibleRulePolicy =
+  | { readonly kind: "fail" }
+  | { readonly kind: "skip"; readonly warn: Logger };
+
 export class FlatBuildStrategy implements BuildOutputStrategy {
   private sourceDir = "";
   private readonly ruleDestinations = new Map<string, string>();
@@ -37,7 +43,8 @@ export class FlatBuildStrategy implements BuildOutputStrategy {
     private readonly force: boolean,
     private readonly absOut: string,
     private readonly isDirectory: (path: string) => Promise<boolean>,
-    private readonly logger?: Logger
+    private readonly logger?: Logger,
+    private readonly inexpressibleRules: InexpressibleRulePolicy = { kind: "fail" }
   ) {}
 
   async preBuild(outDir: string, sourceDir: string): Promise<void> {
@@ -87,7 +94,8 @@ export class FlatBuildStrategy implements BuildOutputStrategy {
     // Every Rule is transformed before any is written: a rejected Rule leaves none behind.
     const outputs: { destPath: string; content: string }[] = [];
     for (const absPath of files) {
-      outputs.push(await this.prepareFlatRule(artifact, pluginName, absPath, rulesSrc));
+      const output = await this.prepareFlatRule(artifact, pluginName, absPath, rulesSrc);
+      if (output !== null) outputs.push(output);
     }
     for (const { destPath, content } of outputs) await this.fs.writeFile(destPath, content);
     return outputs.length;
@@ -163,11 +171,22 @@ export class FlatBuildStrategy implements BuildOutputStrategy {
     pluginName: string,
     absPath: string,
     rulesSrc: string
-  ): Promise<{ destPath: string; content: string }> {
+  ): Promise<{ destPath: string; content: string } | null> {
     const ruleRel = relative(rulesSrc, absPath).replace(/\\/g, "/");
     const srcRelPath = `rules/${ruleRel}`;
     const content = await this.fs.readFile(absPath);
     assertNoToolsPlaceholder(content, pluginName, srcRelPath);
+    const scope = artifact.inexpressibleScope?.(content);
+    if (scope !== undefined) {
+      if (this.inexpressibleRules.kind === "fail") {
+        throw new PathScopedRuleUnsupportedError(pluginName, srcRelPath, scope);
+      }
+      this.inexpressibleRules.warn.warn(
+        `Skipping Rule '${srcRelPath}' in plugin '${pluginName}': scoped by paths ` +
+          `${JSON.stringify(scope)}, which this target cannot express.`
+      );
+      return null;
+    }
     const flatRelPath = artifact.path(pluginName, srcRelPath);
     const destPath = join(this.absOut, flatRelPath);
     // Two Rules flattening to one name would overwrite each other even under --force.
